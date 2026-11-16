@@ -38,6 +38,7 @@ import { callMoves } from "../../lib/moves";
 import { nudge, readWorkspaceForwards } from "../../lib/realtime";
 import {
 	deleteSandbox,
+	deleteWorkspaceDrive,
 	describeSandbox,
 	HOST_SERVICE_PORT,
 	listRemoteBranches,
@@ -911,7 +912,8 @@ export const cloudWorkspaceRouter = {
 							logStepFailed("meter.settle", scope, meterError),
 						);
 						await deleteSandbox(row.providerSandboxId);
-						await reapWorkspaceFiles(row.id, row.organizationId);
+						await deleteWorkspaceDrive(row.driveName);
+						await reapWorkspaceFiles(row.id);
 					});
 				}
 				await recordCloudWorkspaceActivity(

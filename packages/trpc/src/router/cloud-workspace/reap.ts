@@ -5,6 +5,7 @@ import { logControl, logStepFailed } from "../../lib/control-log";
 import { detachAll, reapOrphanFiles } from "../../lib/files";
 import {
 	deleteSandbox,
+	deleteWorkspaceDrive,
 	describeSandbox,
 	rerunBoxStartHook,
 	runBoxArchiveHook,
@@ -101,8 +102,8 @@ export async function reapArchivedCloudWorkspace(
 			logStepFailed("meter.settle", scope, error),
 		);
 		await deleteSandbox(row.providerSandboxId);
-		await reapWorkspaceFiles(row.id, row.organizationId);
-		logControl("archive.deleted", scope, {});
+		await deleteWorkspaceDrive(row.driveName);
+		await reapWorkspaceFiles(row.id);
 		return "reaped";
 	}
 	if (!(await runArchiveHook(row, input))) return "skipped";

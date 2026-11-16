@@ -23,6 +23,7 @@ import {
 	SandboxUnavailableError,
 	stopAndSnapshot,
 	wakeSandbox,
+	workspaceDriveMounts,
 } from "../../lib/sandbox";
 import {
 	attachBootSession,
@@ -92,6 +93,7 @@ async function wake(
 		await wakeSandbox({
 			providerSandboxId: row.providerSandboxId,
 			claim,
+			mounts: workspaceDriveMounts(row.driveName),
 			beforeResume: async (box) => {
 				logControl("wake.started", scope, {});
 				({ bootId } = await Sentry.startSpan(
