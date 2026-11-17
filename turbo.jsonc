@@ -42,6 +42,7 @@
 			"outputs": [
 				".next/**",
 				"!.next/cache/**",
+				"src/app/.well-known/workflow/**",
 				"dist/**",
 				"dist-electron/**",
 				"release/**",

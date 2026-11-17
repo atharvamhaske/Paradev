@@ -195,6 +195,7 @@
 		"resend": "6.18.0",
 		"superjson": "2.2.6",
 		"undici": "7.30.0",
+		"workflow": "5.5.0",
 		"zod": "4.6.5"
 	},
 	"devDependencies": {
