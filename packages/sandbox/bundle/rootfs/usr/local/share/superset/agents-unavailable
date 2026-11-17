@@ -1,0 +1,3 @@
+#!/bin/sh
+echo "Agents are unavailable on this box; reopen the workspace" >&2
+exit 127

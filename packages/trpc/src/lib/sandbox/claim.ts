@@ -28,7 +28,6 @@ import { resolveEnvironment } from "../../router/environment/resolve-environment
 import { resolveMachineSize } from "../billing/plan";
 import { githubUserConnectionFor, githubUserTokenFor } from "../github-user";
 import { sandboxHostSecretFor } from "./access";
-import { agentToolsDriveEnabled } from "./agent-tools";
 import { deriveSandboxCredentials, gitAuthorFor } from "./credentials";
 import { creatorPlugins } from "./plugins";
 import { readRepoHooks } from "./repo-hooks";
@@ -175,7 +174,6 @@ export async function buildSandboxClaim(args: {
 			files,
 			ports: repoHooks?.ports,
 			vcpus: await boxVcpus(args.row),
-			agentTools: await agentToolsDriveEnabled(args.row.organizationId),
 		},
 		environment: {
 			sourceKind: environment.sourceKind,

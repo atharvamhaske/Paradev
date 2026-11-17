@@ -2,6 +2,17 @@ import { describe, expect, it } from "bun:test";
 import { agentCliUnsupported } from "./agentCli";
 
 describe("agentCliUnsupported", () => {
+	it("tells a cloud box to reopen when its agents drive is missing", () => {
+		expect(
+			agentCliUnsupported({
+				binary: "claude",
+				minVersion: "1.0.0",
+				found: null,
+				sandbox: true,
+			}),
+		).toBe("Agents are unavailable on this box; reopen the workspace");
+	});
+
 	it("names the version to install when nothing is found", () => {
 		const message = agentCliUnsupported({
 			binary: "codex",

@@ -6,12 +6,15 @@ import {
 	setSystemTime,
 	test,
 } from "bun:test";
-import { Drive, Sandbox } from "@vercel/sandbox";
+import * as Sentry from "@sentry/core";
+import { APIError, Drive, Sandbox } from "@vercel/sandbox";
 import { stub } from "../../../test/stub";
 import {
+	AGENT_TOOLS_RETRY,
 	agentToolsMounts,
 	findSandboxSession,
 	listActiveWorkspaceSandboxes,
+	provisionSandbox,
 	type SandboxClaim,
 	SESSION_TIMEOUT_MS,
 	topUpSandboxSession,
@@ -164,18 +167,27 @@ describe("topUpSandboxSession", () => {
 	});
 });
 
+const failure = (status: number) =>
+	Object.assign(Object.create(APIError.prototype), {
+		response: { status },
+	}) as Error;
+const reports: { message: string; tags: Record<string, unknown> }[] = [];
+stub(Sentry, {
+	captureMessage: (
+		message: string,
+		context: { tags: Record<string, unknown> },
+	) => {
+		reports.push({ message, tags: context.tags });
+		return "";
+	},
+});
+stub(AGENT_TOOLS_RETRY, { delayMs: 0 });
+
+const BUNDLE = (prefix: string) =>
+	prefix.padEnd(12, "0").repeat(6).slice(0, 64);
+
 describe("agentToolsMounts", () => {
 	const detached = () => Promise.resolve({ currentSandboxName: undefined });
-
-	test("mounts nothing without a drive name", async () => {
-		let asked = 0;
-		const getDrive = () => {
-			asked++;
-			return detached();
-		};
-		expect(await agentToolsMounts(null, getDrive)).toBeUndefined();
-		expect(asked).toBe(0);
-	});
 
 	test("mounts a detached drive read-only, and asks only once", async () => {
 		let asked = 0;
@@ -198,29 +210,55 @@ describe("agentToolsMounts", () => {
 		expect(asked).toBe(1);
 	});
 
-	test("skips a missing drive, or one a writer still holds", async () => {
+	test("retries a drive lookup that failed with 429 or 5xx", async () => {
+		const answers = [failure(503), failure(429)];
+		let asked = 0;
+		const mounts = await agentToolsMounts(
+			"agent-tools-iad1-a1a1a1a1a1a1",
+			() => {
+				asked++;
+				const next = answers.shift();
+				return next ? Promise.reject(next) : detached();
+			},
+		);
+		expect(asked).toBe(3);
+		expect(mounts).toBeDefined();
+	});
+
+	test("opens without the drive when it is missing or a writer holds it, and reports region and bundle", async () => {
+		reports.length = 0;
+		let asked = 0;
 		expect(
-			await agentToolsMounts("agent-tools-sfo1-aaaaaaaaaaaa", () =>
-				Promise.reject(new Error("404")),
+			await agentToolsMounts("agent-tools-sfo1-aaaaaaaaaaaa", () => {
+				asked++;
+				return Promise.reject(failure(404));
+			}),
+		).toBeUndefined();
+		expect(asked).toBe(1);
+		expect(
+			await agentToolsMounts("agent-tools-sfo1-bbbbbbbbbbbb", () =>
+				Promise.resolve({ currentSandboxName: "builder" }),
 			),
 		).toBeUndefined();
-		let asked = 0;
-		const attached = () => {
-			asked++;
-			return Promise.resolve({ currentSandboxName: "builder" });
-		};
-		expect(
-			await agentToolsMounts("agent-tools-sfo1-bbbbbbbbbbbb", attached),
-		).toBeUndefined();
-		expect(
-			await agentToolsMounts("agent-tools-sfo1-bbbbbbbbbbbb", attached),
-		).toBeUndefined();
-		expect(asked).toBe(2);
+		expect(reports.map((report) => report.tags)).toEqual([
+			{
+				"sandbox.agent_tools_drive": "agent-tools-sfo1-aaaaaaaaaaaa",
+				"sandbox.region": "sfo1",
+				"sandbox.bundle": "aaaaaaaaaaaa",
+			},
+			{
+				"sandbox.agent_tools_drive": "agent-tools-sfo1-bbbbbbbbbbbb",
+				"sandbox.region": "sfo1",
+				"sandbox.bundle": "bbbbbbbbbbbb",
+			},
+		]);
 	});
 });
 
 describe("wakeSandbox", () => {
+	const drives = new Map<string, () => Promise<unknown>>();
 	const asked: string[] = [];
+	let updateAnswers: Error[] = [];
 	const updates: unknown[] = [];
 	stub(Sandbox, {
 		get: async () => ({
@@ -231,39 +269,105 @@ describe("wakeSandbox", () => {
 			domain: () => "https://host.example",
 			update: async (patch: unknown) => {
 				updates.push(patch);
+				const next = updateAnswers.shift();
+				if (next) throw next;
 			},
 		}),
 	});
 	stub(Drive, {
-		get: async ({ name }: { name: string }) => {
+		get: ({ name }: { name: string }) => {
 			asked.push(name);
-			return { currentSandboxName: undefined };
+			return (
+				drives.get(name)?.() ??
+				Promise.resolve({ currentSandboxName: undefined })
+			);
 		},
+	});
+	const resumed = new Error("resumed");
+	const wake = (bundleSha: string) =>
+		wakeSandbox({
+			providerSandboxId: "sbx",
+			claim: {
+				vcpus: 2,
+				identity: { SUPERSET_BUNDLE_SHA: bundleSha },
+			} as unknown as SandboxClaim,
+			beforeResume: () => Promise.reject(resumed),
+		});
+	const mountOf = (drive: string) => ({
+		mounts: { "/opt/agents": { drive, mode: "snapshot" } },
 	});
 
 	test("mounts the drive of the box's own region, not its environment's", async () => {
-		const stop = new Error("stop before resume");
-		await expect(
-			wakeSandbox({
-				providerSandboxId: "sbx",
-				claim: {
-					vcpus: 2,
-					agentTools: true,
-					identity: { SUPERSET_BUNDLE_SHA: "abcdef012345".repeat(5) },
-				} as unknown as SandboxClaim,
-				beforeResume: () => Promise.reject(stop),
-			}),
-		).rejects.toBe(stop);
-		expect(asked).toEqual(["agent-tools-iad1-abcdef012345"]);
-		expect(updates).toEqual([
-			{
-				mounts: {
-					"/opt/agents": {
-						drive: "agent-tools-iad1-abcdef012345",
-						mode: "snapshot",
-					},
+		asked.length = 0;
+		updates.length = 0;
+		await expect(wake(BUNDLE("c1"))).rejects.toBe(resumed);
+		expect(asked).toEqual(["agent-tools-iad1-c10000000000"]);
+		expect(updates).toEqual([mountOf("agent-tools-iad1-c10000000000")]);
+	});
+
+	test("a missing drive does not fail the wake: the box resumes without it", async () => {
+		updates.length = 0;
+		drives.set("agent-tools-iad1-c20000000000", () =>
+			Promise.reject(failure(404)),
+		);
+		await expect(wake(BUNDLE("c2"))).rejects.toBe(resumed);
+		expect(updates).toEqual([]);
+	});
+
+	test("a mounts update is retried on 5xx, and its last failure is tolerated", async () => {
+		updates.length = 0;
+		updateAnswers = [failure(502)];
+		await expect(wake(BUNDLE("c3"))).rejects.toBe(resumed);
+		expect(updates).toHaveLength(2);
+		updates.length = 0;
+		updateAnswers = [failure(409)];
+		await expect(wake(BUNDLE("c4"))).rejects.toBe(resumed);
+		expect(updates).toHaveLength(1);
+	});
+});
+
+describe("provisionSandbox", () => {
+	const creates: { mounts?: unknown }[] = [];
+	stub(Sandbox, {
+		get: () => Promise.reject(failure(404)),
+		create: async (config: { mounts?: unknown }) => {
+			creates.push(config);
+			if (config.mounts) throw failure(400);
+			return {
+				domain: () => "https://host.example",
+				writeFiles: async () => {},
+				runCommand: async () => {},
+			};
+		},
+	});
+	stub(Drive, { get: async () => ({ currentSandboxName: undefined }) });
+
+	test("a create the mount makes fail is made again without it", async () => {
+		const made = await provisionSandbox({
+			name: "ws",
+			environment: { sourceKind: "image", sourceRef: "img", region: "sfo1" },
+			claim: {
+				vcpus: 2,
+				hostSecret: "s",
+				managedEnv: {},
+				networkPolicy: "allow-all",
+				identity: {
+					SUPERSET_SANDBOX_CONTRACT: "1",
+					SUPERSET_BUNDLE_SHA: BUNDLE("d1"),
+					SUPERSET_API_URL: "https://api.example",
+					SUPERSET_SANDBOX_WORKSPACE_ID: "6f1c2b8e-1d2a-4c55-9a3e-0b7f5d2c9e11",
+					SUPERSET_SANDBOX_ORGANIZATION_ID:
+						"6f1c2b8e-1d2a-4c55-9a3e-0b7f5d2c9e12",
+					SUPERSET_SANDBOX_REPOSITORIES: "[]",
+					SUPERSET_SANDBOX_IMAGE_TAG: "img",
+					SUPERSET_SANDBOX_PROVIDER: "vercel",
 				},
-			},
+			} as unknown as SandboxClaim,
+		});
+		expect(made.providerSandboxId).toBe("ws");
+		expect(creates.map((config) => Boolean(config.mounts))).toEqual([
+			true,
+			false,
 		]);
 	});
 });

@@ -94,12 +94,17 @@ export function agentCliUnsupported(options: {
 	minVersion: string;
 	found: string | null;
 	upgrade?: string;
+	/** On a cloud box the agents come from a drive the box only gets on its next open. */
+	sandbox?: boolean;
 }): string {
 	const upgrade = options.upgrade ? ` Upgrade with: ${options.upgrade}` : "";
 	const wanted =
 		UNGATED_VERSION === options.minVersion
 			? ""
 			: ` ${options.minVersion} or newer`;
+	if (!options.found && options.sandbox) {
+		return "Agents are unavailable on this box; reopen the workspace";
+	}
 	if (!options.found) {
 		return (
 			`${options.binary} was not found, so this chat cannot start. Install` +
@@ -125,7 +130,13 @@ export async function resolveAgentCli(options: {
 	const command = agentCliCommand(options.binary, env);
 	const found = await probeVersion(command, env);
 	if (!found || !meetsFloor(found, options.minVersion)) {
-		throw new Error(agentCliUnsupported({ ...options, found }));
+		throw new Error(
+			agentCliUnsupported({
+				...options,
+				found,
+				sandbox: Boolean(process.env.SUPERSET_SANDBOX_PROVIDER),
+			}),
+		);
 	}
 	return { command, env };
 }

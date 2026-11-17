@@ -341,14 +341,32 @@ try {
 	);
 	expect("second boot: nothing fetched", !/fetched \//.test(log2));
 	expect("second boot: every step skipped", !/step \S+ running/.test(log2));
-	const binaries = exec(
-		"claude --version && superset --version && echo binaries-ok",
-		{ user: "ubuntu", check: false },
-	);
+	const binaries = exec("superset --version && echo binaries-ok", {
+		user: "ubuntu",
+		check: false,
+	});
 	expect(
-		"second boot: claude and superset still run from the media dir",
+		"second boot: superset still runs from the media dir",
 		/binaries-ok/.test(binaries),
 		binaries.trim().replace(/\n/g, " | "),
+	);
+	const rootDiskAgents = exec(
+		`ls -d /opt/codex /opt/pdev ${SANDBOX_PATHS.media}/claude-* ${SANDBOX_PATHS.media}/codex-* ${SANDBOX_PATHS.media}/pdev-* 2>/dev/null || true`,
+	).trim();
+	expect(
+		"image: no agent CLI on the root disk",
+		rootDiskAgents === "",
+		rootDiskAgents.replaceAll("\n", " "),
+	);
+	const noAgent = exec("claude 2>&1; echo exit=$?", {
+		user: "ubuntu",
+		check: false,
+	});
+	expect(
+		"no drive: launching an agent says why",
+		/Agents are unavailable on this box; reopen the workspace/.test(noAgent) &&
+			/exit=127/.test(noAgent),
+		noAgent.trim().replaceAll("\n", " | "),
 	);
 	expect(
 		"second boot: host-service ready",
@@ -369,31 +387,52 @@ try {
 	console.log(`\nboot log (second boot):\n${log2}`);
 
 	// The agent-tools drive, stubbed as a directory at its mount path: the
-	// listed agent is linked from it, and a session without it falls back to
-	// the image's agents rather than to links that point nowhere.
+	// listed agents are linked from it, one it lacks keeps its root-disk copy,
+	// a copy the drive replaced is removed with its step marker, and a session
+	// without the drive keeps what is on disk and still serves.
 	const stop = () =>
 		exec(
 			`pkill -u ubuntu -TERM || true; sleep 1; pkill -u ubuntu -KILL || true; pkill -x Xvnc || true; rm -rf ${SANDBOX_PATHS.run}`,
 			{ check: false },
 		);
 	const stubSha = "f".repeat(64);
+	const marker = `${SANDBOX_PATHS.steps}/install-agent-clis.version`;
 	stop();
 	exec(
-		`: > ${SANDBOX_PATHS.bootLog}; for name in claude pi; do mkdir -p ${SANDBOX_PATHS.agents}/$name/${stubSha} && printf '#!/bin/sh\\necho drive-%s\\n' $name > ${SANDBOX_PATHS.agents}/$name/${stubSha}/$name && chmod 755 ${SANDBOX_PATHS.agents}/$name/${stubSha}/$name; done && printf '%s' '${JSON.stringify(
+		`: > ${SANDBOX_PATHS.bootLog}; for name in claude codex pi; do mkdir -p ${SANDBOX_PATHS.agents}/$name/${stubSha} && printf '#!/bin/sh\\necho drive-%s\\n' $name > ${SANDBOX_PATHS.agents}/$name/${stubSha}/$name && chmod 755 ${SANDBOX_PATHS.agents}/$name/${stubSha}/$name; done && printf '%s' '${JSON.stringify(
 			[
 				{ name: "claude", sha: stubSha, bin: "claude" },
+				{ name: "codex", sha: stubSha, bin: "codex" },
+				{ name: "pdev", sha: stubSha, bin: "pdev/pdev" },
 				{ name: "pi", sha: stubSha, bin: "pi" },
 			],
 		)}' > ${SANDBOX_PATHS.agents}/manifest.json`,
 	);
+	exec(
+		`for name in codex pdev; do mkdir -p /opt/$name/old && printf '#!/bin/sh\\necho disk-%s\\n' $name > /opt/$name/old/$name && chmod 755 /opt/$name/old/$name && ln -sfn /opt/$name/old/$name /usr/local/bin/$name; done; echo old > ${marker}`,
+	);
 	boot(3);
 	const logDrive = exec(`cat ${SANDBOX_PATHS.bootLog}`);
+	const run = (name: string) =>
+		exec(`${name} 2>&1`, { check: false, user: "ubuntu" });
 	expect(
 		"drive: listed agents linked",
-		/agents\.linked 2/.test(logDrive) &&
-			/drive-claude/.test(exec("claude", { check: false, user: "ubuntu" })) &&
-			/drive-pi/.test(exec("pi", { check: false, user: "ubuntu" })),
-		logDrive.match(/agents\..*/)?.[0],
+		/agents\.linked 3/.test(logDrive) &&
+			/drive-claude/.test(run("claude")) &&
+			/drive-codex/.test(run("codex")) &&
+			/drive-pi/.test(run("pi")),
+		logDrive.match(/agents\.linked.*/)?.[0],
+	);
+	expect(
+		"drive: a disk copy the drive replaced is gone, with its step marker",
+		exec(`ls -d /opt/codex ${marker} 2>/dev/null || true`).trim() === "" &&
+			/agents\.disk\.dropped 1/.test(logDrive),
+		logDrive.match(/agents\.disk.*/)?.[0],
+	);
+	expect(
+		"drive: an agent the drive lacks keeps its disk copy and stops nothing else",
+		/agents\.missing pdev/.test(logDrive) && /disk-pdev/.test(run("pdev")),
+		run("pdev").trim(),
 	);
 	stop();
 	exec(`: > ${SANDBOX_PATHS.bootLog}; rm -rf ${SANDBOX_PATHS.agents}`);
@@ -412,18 +451,14 @@ try {
 		/agents\.unavailable/.test(logNoDrive),
 	);
 	expect(
-		"no drive: image claude back on PATH",
-		exec("readlink -f /usr/local/bin/claude", { check: false }).startsWith(
-			SANDBOX_PATHS.media,
-		),
-		exec("readlink -f /usr/local/bin/claude", { check: false }).trim(),
+		"no drive: the disk copy stays, the drive's agents say why",
+		/disk-pdev/.test(run("pdev")) &&
+			/Agents are unavailable/.test(run("claude")) &&
+			exec("test -L /usr/local/bin/pi && echo dangling", {
+				check: false,
+			}).trim() === "",
 	);
-	expect(
-		"no drive: a drive-only agent's link is gone",
-		exec("test -L /usr/local/bin/pi && echo dangling", {
-			check: false,
-		}).trim() === "",
-	);
+	exec("rm -rf /opt/pdev /usr/local/bin/pdev");
 
 	// Third boot, with host-service deliberately broken: the box must stay
 	// alive, the desktop must still come up, and the log must say so.
