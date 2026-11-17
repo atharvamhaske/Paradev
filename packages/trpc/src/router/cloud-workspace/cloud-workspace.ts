@@ -85,7 +85,7 @@ import {
 	queueProvision,
 	startCloudWorkspace,
 } from "./start";
-import { deleteSandboxAndDriveLater } from "./teardown";
+import { retireAndTearDown } from "./teardown";
 import { transitionCloudWorkspace } from "./transition";
 import {
 	markSandboxUnavailable,
@@ -910,10 +910,13 @@ export const cloudWorkspaceRouter = {
 						await settleWorkspaceNow(row.id).catch((meterError) =>
 							logStepFailed("meter.settle", scope, meterError),
 						);
-						await deleteSandboxAndDriveLater({
-							providerSandboxId: row.providerSandboxId,
-							driveName: row.driveName,
-						});
+						await retireAndTearDown(
+							row,
+							and(
+								eq(cloudWorkspaces.status, "archived"),
+								eq(cloudWorkspaces.deletedAt, archivedAt),
+							),
+						);
 						await reapWorkspaceFiles(row.id);
 					});
 				}
