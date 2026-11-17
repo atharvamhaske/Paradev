@@ -37,8 +37,7 @@ import { logControl, logStepFailed } from "../../lib/control-log";
 import { callMoves } from "../../lib/moves";
 import { nudge, readWorkspaceForwards } from "../../lib/realtime";
 import {
-	deleteSandbox,
-	deleteWorkspaceDrive,
+	deleteSandboxAndDrive,
 	describeSandbox,
 	HOST_SERVICE_PORT,
 	listRemoteBranches,
@@ -911,8 +910,7 @@ export const cloudWorkspaceRouter = {
 						await settleWorkspaceNow(row.id).catch((meterError) =>
 							logStepFailed("meter.settle", scope, meterError),
 						);
-						await deleteSandbox(row.providerSandboxId);
-						await deleteWorkspaceDrive(row.driveName);
+						await deleteSandboxAndDrive(row.providerSandboxId, row.driveName);
 						await reapWorkspaceFiles(row.id);
 					});
 				}

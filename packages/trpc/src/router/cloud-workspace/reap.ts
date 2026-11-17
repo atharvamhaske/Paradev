@@ -4,8 +4,7 @@ import { eq } from "drizzle-orm";
 import { logControl, logStepFailed } from "../../lib/control-log";
 import { detachAll, reapOrphanFiles } from "../../lib/files";
 import {
-	deleteSandbox,
-	deleteWorkspaceDrive,
+	deleteSandboxAndDrive,
 	describeSandbox,
 	rerunBoxStartHook,
 	runBoxArchiveHook,
@@ -101,8 +100,7 @@ export async function reapArchivedCloudWorkspace(
 		await settleWorkspaceNow(row.id).catch((error) =>
 			logStepFailed("meter.settle", scope, error),
 		);
-		await deleteSandbox(row.providerSandboxId);
-		await deleteWorkspaceDrive(row.driveName);
+		await deleteSandboxAndDrive(row.providerSandboxId, row.driveName);
 		await reapWorkspaceFiles(row.id);
 		return "reaped";
 	}
