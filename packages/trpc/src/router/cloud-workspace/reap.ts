@@ -4,7 +4,6 @@ import { eq } from "drizzle-orm";
 import { logControl, logStepFailed } from "../../lib/control-log";
 import { detachAll, reapOrphanFiles } from "../../lib/files";
 import {
-	deleteSandboxAndDrive,
 	describeSandbox,
 	rerunBoxStartHook,
 	runBoxArchiveHook,
@@ -14,6 +13,7 @@ import {
 import { publishCloudWorkspaceJob } from "./jobs";
 import { queueSettleWorkspace, settleWorkspaceNow } from "./meter";
 import { recordSandboxAsleep } from "./sandbox-sleep";
+import { deleteSandboxAndDriveLater } from "./teardown";
 
 /** How long an archived workspace keeps its box running, so an undo finds it live. */
 export const ARCHIVE_STOP_DELAY_SECONDS = 60;
@@ -100,7 +100,10 @@ export async function reapArchivedCloudWorkspace(
 		await settleWorkspaceNow(row.id).catch((error) =>
 			logStepFailed("meter.settle", scope, error),
 		);
-		await deleteSandboxAndDrive(row.providerSandboxId, row.driveName);
+		await deleteSandboxAndDriveLater({
+			providerSandboxId: row.providerSandboxId,
+			driveName: row.driveName,
+		});
 		await reapWorkspaceFiles(row.id);
 		return "reaped";
 	}

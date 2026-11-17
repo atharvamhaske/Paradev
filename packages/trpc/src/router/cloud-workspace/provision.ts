@@ -15,7 +15,6 @@ import {
 import { nudge } from "../../lib/realtime";
 import {
 	buildSandboxClaim,
-	deleteSandboxAndDrive,
 	forkWorkspaceDrive,
 	provisionSandbox,
 	recordBootSpans,
@@ -39,6 +38,7 @@ import {
 	releaseBoot,
 } from "./meter";
 import { recordSandboxAwake } from "./sandbox-expiry";
+import { deleteSandboxAndDriveLater } from "./teardown";
 import { transitionCloudWorkspace } from "./transition";
 
 export const FALLBACK_NAME = "Cloud workspace";
@@ -220,7 +220,7 @@ async function provision(
 				await failChatMovesTo(row.id, "The cloud workspace was deleted").catch(
 					(error) => logStepFailed("chat_moves.fail", scope, error),
 				);
-				await deleteSandboxAndDrive(providerSandboxId, driveName);
+				await deleteSandboxAndDriveLater({ providerSandboxId, driveName });
 				if (bootId) await releaseBoot(bootId);
 			}
 			logControl("provision.abandoned", scope, {
@@ -284,7 +284,7 @@ async function provision(
 		const keepForDiagnosis = error instanceof SandboxNotReadyError;
 		await (keepForDiagnosis
 			? stopSandbox(providerSandboxId)
-			: deleteSandboxAndDrive(providerSandboxId, driveName)
+			: deleteSandboxAndDriveLater({ providerSandboxId, driveName })
 		).catch((teardownError) => {
 			console.error(
 				`[cloud-workspace] ${keepForDiagnosis ? "could not stop" : "leaked"} sandbox ${providerSandboxId}${driveName ? ` or its drive ${driveName}` : ""}`,
