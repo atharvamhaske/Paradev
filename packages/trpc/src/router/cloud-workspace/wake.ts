@@ -32,6 +32,7 @@ import {
 	isUsageRefusal,
 	queueSettleWorkspace,
 } from "./meter";
+import { sandboxResumeLock } from "./resume-lock";
 import { recordSandboxAwake } from "./sandbox-expiry";
 import { recordSandboxAsleep } from "./sandbox-sleep";
 import { transitionCloudWorkspace } from "./transition";
@@ -95,6 +96,7 @@ async function wake(
 			providerSandboxId: row.providerSandboxId,
 			claim,
 			mounts: workspaceDriveMounts(row.driveName),
+			exclusive: sandboxResumeLock(row.providerSandboxId),
 			beforeResume: async (box) => {
 				logControl("wake.started", scope, {});
 				({ bootId } = await Sentry.startSpan(
