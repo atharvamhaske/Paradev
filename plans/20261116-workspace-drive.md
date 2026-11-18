@@ -234,6 +234,11 @@ Documented by Vercel or the SDK, not measured:
   model's FixFreshDurable). The file goes after a failed checkout too, unlike the model's
   proposal: once that checkout has run the box was usable, and a later fresh-path reclone or
   `checkout -B` could replace what the user did meanwhile. Date/Author: 2026-11-18, agent.
+- Decision: a fresh fork of a golden never recloned. Rationale: the real check lost a golden's
+  dependencies once in six runs on a fork whose fetch or `checkout -B` failed, because the fresh
+  fork fell back to main's reclone, which empties the checkout. A fresh fork has no user work, and
+  the later-boot refetch of an untouched copy covers it, so it retries three times and then keeps
+  the golden's checkout. Date/Author: 2026-11-18, coordinator.
 - Decision: a checkout with no marker on a drive is fetched only while it is the golden's untouched
   copy (`state/golden-head`), else kept (the model's FixFetchIfUntouched). Rationale: removing
   `state/fresh` after the first attempt keeps a failed first checkout from being refetched over the
@@ -470,6 +475,7 @@ never shown as their work.
 | In drive mode, what describes the drive's contents is on the drive: checkout markers, `host.db` and its WAL, `agent-launched`, the owner. | `use_drive_state` in `superset-boot`; `SANDBOX_PATHS.driveState` | boot-twice "host.db and the checkout markers are on the drive, not the root disk", "drive, root rolled back"; real check "unclean stop: host.db passes integrity_check" |
 | A drive laid out before is never replaced by the checkout. | `checkout_one` with `drive_has_work` | boot-twice "drive, marker lost: the branch is kept", "drive, fetch failed: nothing on the drive is replaced" |
 | A fresh fork's checkout is fetched later too, while it is still the golden's untouched copy: HEAD at the commit the fork had, a clean tree, the branch absent or at that commit. Anything else is the user's and is never fetched over. | `state/golden-head/<path>`, recorded before the first checkout attempt; `untouched_golden` in `checkout_one` (`superset-boot`) | boot-twice "fresh fork, first fetch failed: a later boot fetches the golden copy while it is untouched", "fresh fork, first fetch failed, then the user committed: their copy is kept" |
+| A fresh fork of a golden is never recloned: its fetch and `checkout -B` are tried three times, and if they still fail the golden's checkout, dependencies included, is kept as it is (`checkout.fresh.failed`), the box is ready, and a later boot fetches it while it is untouched. The reclone is only for a path with no repository. | `checkout_one` in `superset-boot` (the attempts loop) | boot-twice "fresh fork, fetch failed: never recloned…", "fresh fork of a golden with node_modules, first fetch failed: the dependencies survive and a later boot fetches" |
 | A fresh fork checks out its own branch as main does, even if its first session ended before the checkout. | `state/fresh` on the drive, written and synced with the owner at the first layout, removed once the first checkout has run (`checkout` in `superset-boot`) | boot-twice "fresh fork, new branch", "fresh fork, a branch the golden has", "fresh fork, fetch failed", "fresh fork, first session ended before its checkout: the next boot still fetches" |
 | Flag-off boxes run main's checkout code exactly. | `checkout_one` `else` branches | boot-twice first and second boot of the plain box; the diff against main |
 | A home subtree is never seeded partially. | `seed_home_subtree` (copy to `<sub>.seeding`, then `mv -T`; a failed copy refuses the boot) | boot-twice layout checks only; a failed copy is not simulated |

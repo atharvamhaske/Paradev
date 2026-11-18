@@ -404,9 +404,18 @@ checkout_one() {
 		if drive_has_work && [ -z "$untouched" ] && as_user git -C "$ws" rev-parse -q --verify "refs/heads/${branch}" > /dev/null; then
 			touch "$marker"; stamp "checkout.kept ${path} ${branch} is already on the drive"; return 0
 		fi
-		if as_user git -C "$ws" fetch -q --depth 1 origin "$base" && as_user git -C "$ws" checkout -q -B "$branch" FETCH_HEAD; then
-			touch "$marker"; rm -f "$recorded"
-			stamp "checkout.fetched ${path} ${branch} from ${base}${untouched:+ (an untouched golden copy)}"; return 0
+		# A fresh fork tries a few times, then keeps the golden's copy: never a reclone over its dependencies.
+		local attempts=1 attempt
+		[ -n "$DRIVE_MODE" ] && ! drive_has_work && attempts=3
+		for attempt in $(seq 1 "$attempts"); do
+			if as_user git -C "$ws" fetch -q --depth 1 origin "$base" && as_user git -C "$ws" checkout -q -B "$branch" FETCH_HEAD; then
+				touch "$marker"; rm -f "$recorded"
+				stamp "checkout.fetched ${path} ${branch} from ${base}${untouched:+ (an untouched golden copy)}"; return 0
+			fi
+			[ "$attempt" -lt "$attempts" ] && sleep $(( attempt * 2 ))
+		done
+		if [ "$attempts" -gt 1 ]; then
+			stamp "checkout.fresh.failed ${path} ${branch}: the golden's checkout is kept; a later boot fetches it while it is untouched"; return 0
 		fi
 		if drive_has_work; then
 			stamp "checkout.kept ${path} fetch failed; the checkout on the drive is left as it is"; return 1

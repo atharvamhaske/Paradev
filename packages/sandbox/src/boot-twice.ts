@@ -473,9 +473,14 @@ function drivePass(): void {
 		"superset/boot-twice-no-such-branch",
 	);
 	expect(
-		"fresh fork, fetch failed: recloned as main does, no user work yet",
-		/checkout\.cloned \. /.test(fetchFails) &&
-			currentBranch() === "superset/boot-twice-fork-2",
+		"fresh fork, fetch failed: never recloned; the golden's checkout is kept and the box is ready",
+		/checkout\.fresh\.failed \. superset\/boot-twice-fork-2/.test(fetchFails) &&
+			!/checkout\.cloned/.test(fetchFails) &&
+			currentBranch() === "main" &&
+			exec(
+				`for i in $(seq 1 600); do [ -f ${SANDBOX_PATHS.run}/checkout.ready ] && echo ready && exit 0; sleep 0.1; done; echo missing`,
+				{ check: false, on },
+			).trim() === "ready",
 		fetchFails.match(/checkout\..*/g)?.join(" | "),
 	);
 	// A fork of a golden whose checkout carries its installed dependencies, on a new branch.
@@ -548,8 +553,9 @@ function drivePass(): void {
 	endSession();
 	const failedFirst = randomUUID();
 	const unreachable = "https://example.invalid/paradev.git";
+	// The golden is clean: the earlier cases' user file is not part of it.
 	exec(
-		`git -C ${drive}/workspace checkout -q main && git -C ${drive}/workspace -c user.name=t -c user.email=t@example.invalid commit -q --allow-empty -m stale-golden-copy-2 && git -C ${drive}/workspace remote set-url origin ${unreachable}`,
+		`rm -f ${drive}/workspace/user-file.txt && git -C ${drive}/workspace checkout -q main && git -C ${drive}/workspace -c user.name=t -c user.email=t@example.invalid commit -q --allow-empty -m stale-golden-copy-2 && git -C ${drive}/workspace remote set-url origin ${unreachable}`,
 		{ user: "ubuntu", on },
 	);
 	const staleCopy2 = exec(`git -C ${drive}/workspace rev-parse main`, {
@@ -573,15 +579,29 @@ function drivePass(): void {
 		on,
 	});
 	forkOn(repo);
+	const statusAfterFailure = exec(
+		`git -C ${drive}/workspace status --porcelain 2>&1 | head -10`,
+		{ check: false, user: "ubuntu", on },
+	).trim();
+	const depsAfterFailure = exec(
+		`cat ${drive}/workspace/node_modules/golden-dep/index.js`,
+		{ check: false, on },
+	).trim();
 	const laterBoot = bootAndCheckout();
 	expect(
-		"fresh fork, first fetch failed: a later boot fetches the golden copy while it is untouched",
-		/checkout\.clone\.failed/.test(firstAttempt) &&
+		"fresh fork of a golden with node_modules, first fetch failed: the dependencies survive and a later boot fetches",
+		/checkout\.fresh\.failed/.test(firstAttempt) &&
+			!/checkout\.cloned/.test(firstAttempt) &&
+			depsAfterFailure === "installed" &&
+			exec(`cat ${ws}/node_modules/golden-dep/index.js`, {
+				check: false,
+				on,
+			}).trim() === "installed" &&
 			/checkout\.fetched \. main from main \(an untouched golden copy\)/.test(
 				laterBoot,
 			) &&
 			head() !== staleCopy2,
-		`${firstAttempt.match(/checkout\..*/g)?.join(" | ")} || ${laterBoot.match(/checkout\..*/g)?.join(" | ")}`,
+		`${firstAttempt.match(/checkout\..*/g)?.join(" | ")} || ${laterBoot.match(/checkout\..*/g)?.join(" | ")} || status after the failure: ${statusAfterFailure || "clean"}`,
 	);
 
 	// The same, but the user committed after the failed first fetch: that copy is theirs now, kept.
