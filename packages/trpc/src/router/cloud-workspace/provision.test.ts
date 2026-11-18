@@ -7,6 +7,7 @@ import * as chatMoves from "../chat-move/utils/queueChatMove";
 import * as laidOut from "./drive-laid-out";
 import * as meter from "./meter";
 import { provisionCloudWorkspace } from "./provision";
+import * as resumeLock from "./resume-lock";
 import * as expiry from "./sandbox-expiry";
 import * as sleep from "./sandbox-sleep";
 import * as teardown from "./teardown";
@@ -28,7 +29,9 @@ let settle: () => Promise<unknown>;
 let create: () => Promise<unknown>;
 let fork: "existing" | "forked";
 let wins: (to: string) => boolean;
-let current: { status: string } | undefined;
+let current: { status: string; providerSandboxId?: string } | undefined;
+let lockKeys: string[];
+let rowBox: string;
 
 let reads = 0;
 stub(db.query.cloudWorkspaces, {
@@ -78,8 +81,10 @@ stub(transition, {
 	transitionCloudWorkspace: async (args: {
 		to: string;
 		set?: Record<string, unknown>;
+		onBox?: string;
 	}) => {
 		if (!wins(args.to)) return false;
+		if (args.onBox !== undefined && args.onBox !== rowBox) return false;
 		events.push(
 			`to ${args.to}${args.set && "providerSandboxId" in args.set ? ` box=${args.set.providerSandboxId === "ws-box" ? "same" : "new"}` : ""}`,
 		);
@@ -107,6 +112,12 @@ stub(chatMoves, {
 	failChatMovesTo: async () => {},
 });
 stub(realtime, { nudge: () => {} });
+stub(resumeLock, {
+	sandboxResumeLock: (key: string) => {
+		lockKeys.push(key);
+		return (step: () => Promise<unknown>) => step();
+	},
+});
 
 beforeEach(() => {
 	row = { ...ROW };
@@ -117,6 +128,8 @@ beforeEach(() => {
 	wins = () => true;
 	current = undefined;
 	reads = 0;
+	lockKeys = [];
+	rowBox = "ws-box";
 });
 
 describe("provisionCloudWorkspace with a drive", () => {
@@ -144,9 +157,26 @@ describe("provisionCloudWorkspace with a drive", () => {
 		expect(events.some((event) => event.startsWith("teardown"))).toBe(false);
 	});
 
+	test("a provision overtaken by an undo's second provision gives up its box, keeps the drive, and never marks the row", async () => {
+		// Deleted between claim and create, then undone: the row names another box now.
+		rowBox = "ws-box-2";
+		current = { status: "provisioning", providerSandboxId: "ws-box-2" };
+		expect(await provisionCloudWorkspace({ cloudWorkspaceId: ROW.id })).toBe(
+			"skipped",
+		);
+		expect(events).toContain("teardown drive=drive-ws-box");
+		expect(events.some((event) => event.startsWith("to "))).toBe(false);
+		expect(events).not.toContain("laid out");
+	});
+
+	test("the create holds the lock of the drive, whatever the box is called", async () => {
+		await provisionCloudWorkspace({ cloudWorkspaceId: ROW.id });
+		expect(lockKeys).toEqual(["drive-ws-box"]);
+	});
+
 	test("a provision that lost its row to an archive leaves the box to that archive's reap", async () => {
 		wins = (to) => to !== "awake";
-		current = { status: "archived" };
+		current = { status: "archived", providerSandboxId: "ws-box" };
 		expect(await provisionCloudWorkspace({ cloudWorkspaceId: ROW.id })).toBe(
 			"skipped",
 		);

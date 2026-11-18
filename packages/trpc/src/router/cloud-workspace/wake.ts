@@ -96,7 +96,7 @@ async function wake(
 			providerSandboxId: row.providerSandboxId,
 			claim,
 			mounts: workspaceDriveMounts(row.driveName),
-			exclusive: sandboxResumeLock(row.providerSandboxId),
+			exclusive: sandboxResumeLock(row.driveName ?? row.providerSandboxId),
 			beforeResume: async (box) => {
 				logControl("wake.started", scope, {});
 				({ bootId } = await Sentry.startSpan(

@@ -200,13 +200,16 @@ async function provision(
 					environment,
 					claim,
 					mounts: workspaceDriveMounts(driveName),
-					exclusive: sandboxResumeLock(providerSandboxId),
+					exclusive: sandboxResumeLock(driveName ?? providerSandboxId, {
+						wait: true,
+					}),
 				}),
 		);
 		const ready = await transitionCloudWorkspace({
 			id: row.id,
 			from: ["provisioning"],
 			to: "awake",
+			onBox: providerSandboxId,
 			set: {
 				providerSandboxId: sandbox.providerSandboxId,
 				sandboxUrl: sandbox.sandboxUrl,
@@ -220,9 +223,13 @@ async function provision(
 			// this job. A duplicate delivery loses the row to the first one.
 			const current = await db.query.cloudWorkspaces.findFirst({
 				where: eq(cloudWorkspaces.id, row.id),
-				columns: { status: true },
+				columns: { status: true, providerSandboxId: true },
 			});
-			if (current?.status === "archived") {
+			// An undo gave the row another box and a second provision: this box is no row's, and must not keep the drive.
+			if (current && current.providerSandboxId !== providerSandboxId) {
+				if (bootId) await releaseBoot(bootId);
+				await deleteSandboxAndDriveLater({ providerSandboxId, driveName });
+			} else if (current?.status === "archived") {
 				await failChatMovesTo(row.id, "The cloud workspace was deleted").catch(
 					(error) => logStepFailed("chat_moves.fail", scope, error),
 				);
@@ -318,6 +325,7 @@ async function provision(
 			id: row.id,
 			from: ["provisioning", "awake", "asleep"],
 			to: "failed",
+			onBox: providerSandboxId,
 			set: keepForDiagnosis
 				? { providerSandboxId }
 				: {

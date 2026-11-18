@@ -2,19 +2,40 @@ import { dbWs } from "@superset/db/client";
 import { sql } from "drizzle-orm";
 import { type ResumeLock, SandboxNotReadyError } from "../../lib/sandbox";
 
+/** How long a provision waits for another holder before it answers "still starting". */
+const PROVISION_LOCK_WAIT = "20s";
+
 /**
- * One caller at a time resumes a box: a transaction-scoped advisory lock,
- * held while the step runs. A second caller does not queue behind it; it
- * answers "still starting", and its retry sees the box as the first left it.
+ * One caller at a time resumes or creates a box on this key: the drive's name
+ * when there is one, since a drive has one writer whatever the box is
+ * called, else the box's. A transaction-scoped advisory lock, held while the
+ * step runs. A wake does not queue behind another holder; it answers "still
+ * starting", and its retry sees the box as the first left it. A provision
+ * waits a moment: its row has no other way to retry.
  */
-export function sandboxResumeLock(providerSandboxId: string): ResumeLock {
+export function sandboxResumeLock(
+	key: string,
+	{ wait = false }: { wait?: boolean } = {},
+): ResumeLock {
+	const lockKey = `sandbox-resume:${key}`;
 	return (step) =>
 		dbWs.transaction(async (tx) => {
+			if (wait) {
+				await tx.execute(
+					sql`select set_config('lock_timeout', ${PROVISION_LOCK_WAIT}, true)`,
+				);
+				await tx
+					.execute(sql`select pg_advisory_xact_lock(hashtext(${lockKey}))`)
+					.catch(() => {
+						throw new SandboxNotReadyError(key);
+					});
+				return step();
+			}
 			const result = await tx.execute(
-				sql`select pg_try_advisory_xact_lock(hashtext(${`sandbox-resume:${providerSandboxId}`})) as locked`,
+				sql`select pg_try_advisory_xact_lock(hashtext(${lockKey})) as locked`,
 			);
 			const [row] = result.rows as Array<{ locked: boolean }>;
-			if (!row?.locked) throw new SandboxNotReadyError(providerSandboxId);
+			if (!row?.locked) throw new SandboxNotReadyError(key);
 			return step();
 		});
 }

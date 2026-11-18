@@ -15,6 +15,8 @@ export async function transitionCloudWorkspace(args: {
 	from: readonly CloudWorkspaceStatus[];
 	to: CloudWorkspaceStatus;
 	set?: Partial<typeof cloudWorkspaces.$inferInsert>;
+	/** Only while the row still names this box: an unarchive may have given it another. */
+	onBox?: string;
 }): Promise<boolean> {
 	const moved = await db
 		.update(cloudWorkspaces)
@@ -23,6 +25,9 @@ export async function transitionCloudWorkspace(args: {
 			and(
 				eq(cloudWorkspaces.id, args.id),
 				inArray(cloudWorkspaces.status, [...args.from]),
+				args.onBox === undefined
+					? undefined
+					: eq(cloudWorkspaces.providerSandboxId, args.onBox),
 			),
 		)
 		.returning({ id: cloudWorkspaces.id });
