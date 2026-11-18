@@ -59,8 +59,8 @@ process.env.SKIP_ENV_VALIDATION ??= "1";
 const SKIP_IMAGE = process.argv.includes("--skip-image");
 const KEEP_OLD = process.argv.includes("--keep-old");
 const PRODUCTION = process.argv.includes("--production");
-/** Released bundles whose drives stay in every region, so a rollback to one of them has its drives. */
-const KEPT_RELEASED_BUNDLES = 3;
+/** Earlier bundles whose drives stay in every region: a wake that read its bundle just before this release still finds its drive, and so does a rollback by one release. */
+const KEPT_PREVIOUS_BUNDLES = 1;
 const FOLLOWED_UPSTREAM = ["claude", "codex", "chrome", "opencode", "pi"];
 /** The environment the release rebuilds; without it, the release creates one named INTERNAL_NAME. */
 const ENVIRONMENT_ID = process.env.SUPERSET_INTERNAL_ENVIRONMENT_ID;
@@ -616,16 +616,19 @@ if (!PRODUCTION) {
 		const rows = await db.query.environments.findMany({
 			columns: { region: true, bundleSha: true },
 		});
-		const recent = await db
+		const thisAndPrevious = await db
 			.select({ sha: sandboxBundles.sha })
 			.from(sandboxBundles)
 			.orderBy(desc(sandboxBundles.releasedAt))
-			.limit(KEPT_RELEASED_BUNDLES);
+			.limit(1 + KEPT_PREVIOUS_BUNDLES);
 		const { deleted, kept } = await agentTools.pruneAgentToolsDrives({
 			host: driveHost,
 			referenced: agentTools.referencedAgentToolsDrives({
 				rows,
-				recentBundles: [bundle.sha256, ...recent.map((row) => row.sha)],
+				recentBundles: [
+					bundle.sha256,
+					...thisAndPrevious.map((row) => row.sha),
+				],
 				regions: SANDBOX_REGION_IDS,
 			}),
 		});
