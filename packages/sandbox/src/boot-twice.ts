@@ -144,8 +144,7 @@ const identity = renderSandboxConf(identityFields);
 
 /**
  * Drive mode, with a tmpfs standing in for the Vercel drive at its mount
- * path: the layout, the store variables, memguard's swap dir and Docker's
- * data-root, then a second boot after the session's bind mounts are gone.
+ * path: the layout, the store variables and Docker's data-root, then a second boot after the session's bind mounts are gone.
  */
 function drivePass(): void {
 	const drive = SANDBOX_PATHS.drive;
@@ -242,15 +241,6 @@ function drivePass(): void {
 			check: false,
 			on,
 		}).trim() === SANDBOX_DRIVE_STORES.bun,
-	);
-	expect(
-		"drive: memguard swaps on the drive",
-		/swap_dir=\/mnt\/superset-drive\/swap/.test(
-			exec(
-				`for i in $(seq 1 50); do grep -q swap_dir= ${SANDBOX_PATHS.logs}/memguard.log && break; sleep 0.1; done; cat ${SANDBOX_PATHS.logs}/memguard.log`,
-				{ check: false, on },
-			),
-		),
 	);
 	expect(
 		"drive: Docker's data-root is on the drive, storage driver kept",

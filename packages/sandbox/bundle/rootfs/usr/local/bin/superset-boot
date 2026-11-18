@@ -119,7 +119,6 @@ layout_drive() {
 	user_path "$drive" workspace
 	user_path "$drive" home
 	user_path "$drive" state
-	install -d -m 0700 "${drive}/swap"
 	install -d -m 0710 "${drive}/docker"
 	install -d -o "$SUPERSET_USER" -g "$SUPERSET_USER" "$SUPERSET_WORKSPACE_DIR"
 	bind_into "${drive}/workspace" "$SUPERSET_WORKSPACE_DIR"

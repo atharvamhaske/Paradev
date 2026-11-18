@@ -13,7 +13,7 @@
  * runs on a box in drive mode and on a plain box, side by side: the checkout,
  * a real `bun install`, REAL_SANDBOX_WORK_GB (default 4) GB written under
  * /workspace, persistence sentinels, a stop, a wake, a second stop. The drive
- * box also checks the layout, the stores, swap and Docker on the drive. Then
+ * box also checks the layout, the stores and Docker on the drive. Then
  * it is stopped uncleanly (host-service killed, writers still going) and must
  * boot with host.db and the checkout intact, and it is promoted to a
  * drive-mode golden that a new workspace is created from on a new branch, the
@@ -248,7 +248,6 @@ async function drivePass(): Promise<number> {
 		"host-service ready",
 		"/workspace is a bind mount of the drive",
 		"the checkout landed on the drive",
-		"memguard swaps on the drive",
 		"docker info reports the drive data-root",
 		"the checkout is still there after a wake",
 		"the layout was redone on the wake",
@@ -481,14 +480,6 @@ async function drivePass(): Promise<number> {
 					"the checkout landed on the drive",
 					checkout.out === "on-drive",
 					checkout.detail,
-				);
-				const swap = await root(
-					`grep -o 'swap_dir=[^ ]*' ${SANDBOX_PATHS.logs}/memguard.log`,
-				);
-				check(
-					"memguard swaps on the drive",
-					swap.out.includes(`swap_dir=${drive}/swap`),
-					swap.detail,
 				);
 				const dockerRoot = await root(
 					`(dockerd > /tmp/dockerd.log 2>&1 &); for i in $(seq 1 60); do docker info --format '{{.DockerRootDir}}' 2>/dev/null && exit 0; sleep 1; done; tail -5 /tmp/dockerd.log`,

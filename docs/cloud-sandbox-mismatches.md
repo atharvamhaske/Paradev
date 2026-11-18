@@ -728,7 +728,7 @@ about:
   minutes, so every delete stops the box first (`deleteSandboxAndDrive`).
 
 A drive has no discard either: deleting a file on it does not lower its
-billed size, so memguard reuses fixed swapfile names on it.
+billed size.
 A drive that did not mount leaves the root disk's empty `/workspace` in its
 place, which would look like the user's work is gone. So the identity file
 names the drive (`SUPERSET_SANDBOX_DRIVE`), the drive names its owner

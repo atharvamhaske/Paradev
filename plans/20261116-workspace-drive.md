@@ -59,7 +59,7 @@ of the drive appear at `/workspace` or under `/home/ubuntu`.
 
 Measured on Vercel on 2026-11-16 (default image, `iad1`):
 
-- A drive is a real ext4 block device. inotify, hardlinks within one mount, and swap work on it.
+- A drive is a real ext4 block device. inotify and hardlinks within one mount work on it.
 - At stop, processes get SIGTERM and at least 10 s before the snapshot is taken.
 - A snapshot is a block-level, full copy of the disk. Deleting a file does not shrink a later
   snapshot. Only never writing the bytes, or overwriting freed space with zeros, shrinks it.
@@ -77,7 +77,6 @@ Measured on Vercel on 2026-11-17, on our released image:
   `EXDEV`.
 - `dockerd --data-root /mnt/superset-drive/docker` (storage driver `fuse-overlayfs`) pulled and
   ran an image, also after a wake.
-- 6 GB of swapfiles on the drive carried a process touching 11 GB on an 8 GB box.
 - Stop 12 s, wake 1.9 s. Afterwards the root snapshot was 2.11 GB, identical to a bare box.
 - A drive must be stopped and detached before anything else mounts it: a mount taken while a
   writer still held it read-write saw a corrupt or empty filesystem. After a stop, poll
@@ -104,7 +103,7 @@ Documented by Vercel or the SDK, not measured:
 - [x] (2026-11-17) Rebased on main; the drive mount and the agent-tools mount (PR #9844) are one
   `mounts` object (`composeMounts` in `vercel.ts`).
 - [x] (2026-11-17) Milestone 3: `superset-boot` lays out the drive, exports the store variables,
-  points Docker at the drive; memguard swaps on the drive. boot-twice covers it with a tmpfs at
+  points Docker at the drive. boot-twice covers it with a tmpfs at
   the mount path.
 - [x] (2026-11-17) Milestone 4: the release builds the internal golden in drive mode when the
   organization's flag is on; promote carries a source's drive to the golden.
@@ -126,7 +125,7 @@ Documented by Vercel or the SDK, not measured:
   resolve host <hostname>` to stderr, and the check compared stdout and stderr together. Also,
   findmnt reports a bind mount of a subdirectory as `/dev/vdc[/workspace]`, so its SOURCE never
   equals the drive's. The log showed the product doing the right thing: `drive.layout ms=50`,
-  `/workspace` from `/dev/vdc[/workspace]`, memguard swap on the drive, and docker's root at
+  `/workspace` from `/dev/vdc[/workspace]` and docker's root at
   `/mnt/superset-drive/docker`. The check now compares stdout only, and compares MAJ:MIN plus
   FSROOT for the bind.
 
@@ -190,9 +189,11 @@ Documented by Vercel or the SDK, not measured:
   (`DRIVE_DETACH_TIMEOUT_MS`), then fails with `DriveStillAttachedError` rather than mount. A
   failed drive mount update throws; a failed agent-tools mount update only warns. Date/Author:
   2026-11-17, agent.
-- Decision: memguard removes leftover swapfiles in both `/var/swap` and the drive on start and
-  keeps its fixed names (`superset-0`, `superset-1`, ...). Rationale: no discard on the drive, so
-  new names could grow its billed size. Date/Author: 2026-11-17, coordinator.
+- Decision: no swap on the drive. Since #9924 cloud boxes have no swap at all, and memguard reaps
+  early enough without it; the drive has no swap directory. memguard's cleanup of old
+  `/var/swap` files is main's and covers every box that could have one: no drive box ran the
+  earlier drive swap, since no environment has been in drive mode. Date/Author: 2026-11-18,
+  coordinator.
 - Decision: Docker's data-root moves to the drive by `superset-boot` rewriting
   `/etc/docker/daemon.json` after `apply-rootfs`, merged from the bundle's own file. Rationale:
   `apply-rootfs` compares only the hash sidecar, so the rewrite stays until a bundle changes
@@ -292,7 +293,6 @@ The drive is mounted by Vercel at `/mnt/superset-drive`. It holds:
       home/                 subtrees bind-mounted under /home/ubuntu
         .cache  .local/share  .local/state  .npm  .cargo/registry  .rustup
         .claude  .codex/sessions  go/pkg
-      swap/                 memguard's swapfiles
       docker/               dockerd's data-root
 
 The home subtrees are `SANDBOX_DRIVE_HOME_SUBTREES` in `packages/shared/src/sandbox/contract.ts`,
@@ -312,8 +312,6 @@ In drive mode the boot also:
   `/etc/profile.d/superset.sh`) and into host-service's env;
 - adds `/.superset/stores/` to `.git/info/exclude` of a root checkout;
 - rewrites `/etc/docker/daemon.json` with `"data-root": "/mnt/superset-drive/docker"`.
-
-memguard uses `/mnt/superset-drive/swap` when the drive is a mount point, else `/var/swap`.
 
 What stays on the root disk: `/etc/superset`, `/opt/superset`, `/usr`, `/var/lib/superset`
 (host.db, checkout markers), `/var/log/superset`, `/home/ubuntu` itself with its dotfiles,
@@ -400,8 +398,7 @@ Per typical workspace with 7 GB of `/workspace` and home state, per month:
              + root snapshot 2.11 GB  x $0.08 = $0.17
              = at most about $0.52
 
-Per event: a bun install that writes node_modules, 5 GB x $0.004 = $0.02; heavy swapping, 50 GB
-of swap writes a day, $0.20 a day. The main gain is the wake: about 5 GB less to restore (the root
+Per event: a bun install that writes node_modules, 5 GB x $0.004 = $0.02. The main gain is the wake: about 5 GB less to restore (the root
 snapshot went from ~7 GB to 2.11 GB), roughly 5 s at the measured rate.
 
 
