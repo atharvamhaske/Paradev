@@ -478,6 +478,38 @@ function drivePass(): void {
 			currentBranch() === "superset/boot-twice-fork-2",
 		fetchFails.match(/checkout\..*/g)?.join(" | "),
 	);
+	// A fork of a golden whose checkout carries its installed dependencies, on a new branch.
+	endSession();
+	exec(
+		`git -C ${drive}/workspace checkout -q main && mkdir -p ${drive}/workspace/node_modules/golden-dep && echo installed > ${drive}/workspace/node_modules/golden-dep/index.js`,
+		{ user: "ubuntu", on },
+	);
+	exec(`rm -rf ${state}`, { on });
+	writeConf({
+		...driveIdentity,
+		SUPERSET_SANDBOX_WORKSPACE_ID: randomUUID(),
+		SUPERSET_SANDBOX_REPOSITORIES: JSON.stringify([
+			{
+				url: repo,
+				branch: "superset/boot-twice-fork-deps",
+				baseBranch: "main",
+				path: ".",
+			},
+		]),
+	});
+	const withDeps = bootAndCheckout();
+	expect(
+		"fresh fork of a golden with node_modules, new branch: the dependencies survive",
+		/checkout\.fetched \. superset\/boot-twice-fork-deps from main/.test(
+			withDeps,
+		) &&
+			exec(`cat ${ws}/node_modules/golden-dep/index.js`, {
+				check: false,
+				on,
+			}).trim() === "installed",
+		withDeps.match(/checkout\..*/g)?.join(" | "),
+	);
+
 	// A fresh fork whose first session ended between its layout and its checkout.
 	endSession();
 	const interrupted = randomUUID();

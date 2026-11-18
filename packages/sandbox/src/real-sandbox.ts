@@ -307,8 +307,8 @@ async function drivePass(): Promise<number> {
 				)
 			).out,
 		);
-	const diagnose = async (when: string) => {
-		const report = await root(
+	const diagnose = async (when: string, on: BoxRun = run) => {
+		const report = await on(
 			[
 				`echo '--- findmnt ${drive} and /workspace'`,
 				`findmnt -no SOURCE,MAJ:MIN,FSROOT,OPTIONS ${drive} ${SANDBOX_PATHS.workspace}`,
@@ -320,11 +320,16 @@ async function drivePass(): Promise<number> {
 				`ls ${SANDBOX_PATHS.run}`,
 				`echo '--- /etc/docker/daemon.json'`,
 				`cat /etc/docker/daemon.json`,
+				`echo '--- df ${drive}'`,
+				`df -h ${drive} ${SANDBOX_PATHS.workspace} 2>&1`,
+				`echo '--- git status of /workspace'`,
+				`runuser -u ${SANDBOX_USER} -- git -C ${SANDBOX_PATHS.workspace} status --short --branch 2>&1 | head -20`,
 				`echo '--- checkout.log'`,
 				`tail -30 ${SANDBOX_PATHS.logs}/checkout.log`,
 				`echo '--- boot log'`,
 				`cat ${SANDBOX_PATHS.bootLog}`,
 			].join("; "),
+			{ root: true },
 		).catch((error) => ({ detail: `diagnosis failed: ${error}` }));
 		log(`drive: diagnosis ${when}:\n${report.detail}`);
 	};
@@ -647,6 +652,9 @@ async function drivePass(): Promise<number> {
 				deps.out === "present",
 				deps.detail,
 			);
+			if (deps.out !== "present") {
+				await diagnose("of the workspace of the drive-mode golden", forkRun);
+			}
 		} catch (error) {
 			stoppedAt.push(`golden path: ${String(error).slice(0, 300)}`);
 		}
