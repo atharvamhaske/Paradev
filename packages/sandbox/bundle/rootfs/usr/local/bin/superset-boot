@@ -371,21 +371,42 @@ start_hook() {
 # checkout it inherited.
 # A drive laid out in an earlier boot holds the user's work: nothing on it is replaced.
 drive_has_work() { [ -n "$DRIVE_MODE" ] && [ ! -e "${SUPERSET_DRIVE_STATE_DIR}/fresh" ]; }
+# Still exactly the golden's copy: HEAD at the commit the fresh fork had, nothing changed, and the
+# branch absent or at that commit. Then no user work can be in it, and it may be fetched.
+untouched_golden() {
+	local ws="$1" recorded="$2" branch="$3" head
+	[ -f "$recorded" ] || return 1
+	head="$(cat "$recorded")"
+	[ "$(as_user git -C "$ws" rev-parse HEAD 2>/dev/null)" = "$head" ] || return 1
+	[ -z "$(as_user git -C "$ws" status --porcelain 2>/dev/null)" ] || return 1
+	case "$(as_user git -C "$ws" rev-parse -q --verify "refs/heads/${branch}" 2>/dev/null || echo none)" in
+		"$head"|none) return 0 ;;
+		*) return 1 ;;
+	esac
+}
 checkout_one() {
 	local url="$1" branch="$2" path="$3" base="$4"
 	[ -n "$base" ] || base="$branch"
 	local ws="${SUPERSET_WORKSPACE_DIR}/${path}" marker="${SUPERSET_CHECKOUTS_DIR}/${path}"
 	if [ "$path" = "." ]; then ws="$SUPERSET_WORKSPACE_DIR"; marker="${SUPERSET_CHECKOUTS_DIR}/@root"; fi
 	if [ -f "$marker" ]; then stamp "checkout.skipped ${path} already done"; return 0; fi
-	local baked
+	local baked recorded untouched=""
+	recorded="${SUPERSET_DRIVE_STATE_DIR:-}/golden-head/${path//\//%}"
+	[ "$path" = "." ] && recorded="${SUPERSET_DRIVE_STATE_DIR:-}/golden-head/@root"
 	baked="$(as_user git -C "$ws" remote get-url origin 2>/dev/null || true)"
 	if [ "$baked" = "$url" ] && [ -d "$ws/.git" ]; then
+		if [ -n "$DRIVE_MODE" ] && ! drive_has_work && [ ! -f "$recorded" ]; then
+			install -d "${recorded%/*}"
+			as_user git -C "$ws" rev-parse HEAD > "$recorded" 2>/dev/null && sync "$recorded" || rm -f "$recorded"
+		fi
+		drive_has_work && untouched_golden "$ws" "$recorded" "$branch" && untouched=1
 		# On a drive laid out before, a checkout that already has the branch is the user's work.
-		if drive_has_work && as_user git -C "$ws" rev-parse -q --verify "refs/heads/${branch}" > /dev/null; then
+		if drive_has_work && [ -z "$untouched" ] && as_user git -C "$ws" rev-parse -q --verify "refs/heads/${branch}" > /dev/null; then
 			touch "$marker"; stamp "checkout.kept ${path} ${branch} is already on the drive"; return 0
 		fi
 		if as_user git -C "$ws" fetch -q --depth 1 origin "$base" && as_user git -C "$ws" checkout -q -B "$branch" FETCH_HEAD; then
-			touch "$marker"; stamp "checkout.fetched ${path} ${branch} from ${base}"; return 0
+			touch "$marker"; rm -f "$recorded"
+			stamp "checkout.fetched ${path} ${branch} from ${base}${untouched:+ (an untouched golden copy)}"; return 0
 		fi
 		if drive_has_work; then
 			stamp "checkout.kept ${path} fetch failed; the checkout on the drive is left as it is"; return 1
@@ -421,7 +442,7 @@ checkout_one() {
 			( shopt -s dotglob nullglob; for entry in "$tmp"/*; do [ "${entry##*/}" = ".git" ] || mv "$entry" "$ws"/; done )
 		fi
 		mv "$tmp/.git" "$ws/.git"; rmdir "$tmp"
-		touch "$marker"; stamp "checkout.cloned ${path} ${url}"; return 0
+		touch "$marker"; rm -f "$recorded"; stamp "checkout.cloned ${path} ${url}"; return 0
 	fi
 	rm -rf "$tmp"; stamp "checkout.clone.failed ${path}"; return 1
 }

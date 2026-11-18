@@ -512,6 +512,73 @@ function drivePass(): void {
 		resumedFresh.match(/checkout\..*/g)?.join(" | "),
 	);
 
+	// A fresh fork whose first fetch and clone both fail: a later boot still fetches the untouched golden copy.
+	endSession();
+	const failedFirst = randomUUID();
+	const unreachable = "https://example.invalid/paradev.git";
+	exec(
+		`git -C ${drive}/workspace checkout -q main && git -C ${drive}/workspace -c user.name=t -c user.email=t@example.invalid commit -q --allow-empty -m stale-golden-copy-2 && git -C ${drive}/workspace remote set-url origin ${unreachable}`,
+		{ user: "ubuntu", on },
+	);
+	const staleCopy2 = exec(`git -C ${drive}/workspace rev-parse main`, {
+		user: "ubuntu",
+		on,
+	}).trim();
+	exec(`rm -rf ${state}`, { on });
+	const forkOn = (url: string) =>
+		writeConf({
+			...driveIdentity,
+			SUPERSET_SANDBOX_WORKSPACE_ID: failedFirst,
+			SUPERSET_SANDBOX_REPOSITORIES: JSON.stringify([
+				{ url, branch: "main", baseBranch: "main", path: "." },
+			]),
+		});
+	forkOn(unreachable);
+	const firstAttempt = bootAndCheckout();
+	endSession();
+	exec(`git -C ${drive}/workspace remote set-url origin ${repo}`, {
+		user: "ubuntu",
+		on,
+	});
+	forkOn(repo);
+	const laterBoot = bootAndCheckout();
+	expect(
+		"fresh fork, first fetch failed: a later boot fetches the golden copy while it is untouched",
+		/checkout\.clone\.failed/.test(firstAttempt) &&
+			/checkout\.fetched \. main from main \(an untouched golden copy\)/.test(
+				laterBoot,
+			) &&
+			head() !== staleCopy2,
+		`${firstAttempt.match(/checkout\..*/g)?.join(" | ")} || ${laterBoot.match(/checkout\..*/g)?.join(" | ")}`,
+	);
+
+	// The same, but the user committed after the failed first fetch: that copy is theirs now, kept.
+	endSession();
+	exec(`git -C ${drive}/workspace remote set-url origin ${unreachable}`, {
+		user: "ubuntu",
+		on,
+	});
+	exec(`rm -rf ${state}`, { on });
+	forkOn(unreachable);
+	bootAndCheckout();
+	endSession();
+	exec(
+		`git -C ${drive}/workspace -c user.name=t -c user.email=t@example.invalid commit -q --allow-empty -m user-work-after-failed-fetch && git -C ${drive}/workspace remote set-url origin ${repo}`,
+		{ user: "ubuntu", on },
+	);
+	const usersCommit = exec(`git -C ${drive}/workspace rev-parse HEAD`, {
+		user: "ubuntu",
+		on,
+	}).trim();
+	forkOn(repo);
+	const touched = bootAndCheckout();
+	expect(
+		"fresh fork, first fetch failed, then the user committed: their copy is kept",
+		/checkout\.kept \. main is already on the drive/.test(touched) &&
+			head() === usersCommit,
+		touched.match(/checkout\..*/g)?.join(" | "),
+	);
+
 	writeConf(driveIdentity);
 
 	const refuses = (label: string, phase: string) => {
