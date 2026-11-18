@@ -17,6 +17,7 @@ import {
 	forkWorkspaceDrive,
 	provisionSandbox,
 	recordBootSpans,
+	SandboxBusyError,
 	SandboxDriveMissingError,
 	SandboxDriveRefusedError,
 	type SandboxEnvironment,
@@ -31,6 +32,7 @@ import {
 } from "../chat-move/utils/queueChatMove";
 import { recordDriveLaidOut } from "./drive-laid-out";
 import { generateCloudWorkspaceName } from "./generate-name";
+import { publishCloudWorkspaceJob } from "./jobs";
 import {
 	attachBootSession,
 	authorizeBoot,
@@ -63,7 +65,13 @@ export interface ProvisionCloudWorkspaceInput {
 	namingPrompt?: string;
 	/** A built-in agent to run once the sandbox is up; see cloud-agent-launch. */
 	launch?: CloudAgentLaunch;
+	/** How many times this provision found the box's resume lock held and requeued itself. */
+	lockRetries?: number;
 }
+
+/** A lock held this long by others means something is stuck: the row is failed as for any error. */
+const PROVISION_LOCK_RETRIES = 10;
+const PROVISION_LOCK_RETRY_SECONDS = 15;
 
 type CloudWorkspaceRow = typeof cloudWorkspaces.$inferSelect;
 
@@ -102,6 +110,7 @@ async function claimWorkspaceDrive(
 export type ProvisionCloudWorkspaceOutcome =
 	| "provisioned"
 	| "skipped"
+	| "retrying"
 	| "failed";
 
 /**
@@ -172,6 +181,8 @@ async function provision(
 	let driveName = row.driveName;
 	// Only a drive this provision forked may go with a failed box; an unarchived workspace's is its work.
 	let forkedDrive = false;
+	// Another delivery on the same box name, or a wake, may have brought the row up: only this job's own row is its to fail.
+	let madeAwake = false;
 	try {
 		const {
 			claim,
@@ -225,6 +236,7 @@ async function provision(
 				bootAgentCredentialDigest: agentCredentialDigest,
 			},
 		});
+		madeAwake = ready;
 		if (!ready) {
 			// Deleted while the box was being made. The box is the row's, and the
 			// archive's own reap stops and deletes it after that archive's grace
@@ -299,8 +311,28 @@ async function provision(
 		return "provisioned";
 	} catch (error) {
 		await naming.catch(() => {});
+		// Another caller holds the box's lock: try again later, and touch nothing meanwhile.
+		const lockRetries = input.lockRetries ?? 0;
+		if (
+			error instanceof SandboxBusyError &&
+			lockRetries < PROVISION_LOCK_RETRIES
+		) {
+			if (bootId) {
+				await releaseBoot(bootId, "provision_abandoned").catch((releaseError) =>
+					logStepFailed("boot.release", scope, releaseError),
+				);
+			}
+			await publishCloudWorkspaceJob({
+				path: "/api/cloud-workspaces/provision",
+				body: { ...input, lockRetries: lockRetries + 1 },
+				delaySeconds: PROVISION_LOCK_RETRY_SECONDS,
+				runLocally: provisionCloudWorkspace,
+			});
+			logControl("provision.retrying", scope, { attempt: lockRetries + 1 });
+			return "retrying";
+		}
 		// The drive did not come up but its data is intact: the box sleeps, and the next wake mounts it afresh.
-		if (error instanceof SandboxDriveMissingError) {
+		if (error instanceof SandboxDriveMissingError && madeAwake) {
 			const stopped = await stopSandbox(providerSandboxId).catch(() => ({
 				sessionId: null,
 			}));
@@ -333,15 +365,10 @@ async function provision(
 			error instanceof SandboxNotReadyError ||
 			error instanceof SandboxDriveRefusedError;
 		const refused = isUsageRefusal(error);
-		if (keepForDiagnosis) {
-			await stopSandbox(providerSandboxId).catch((teardownError) =>
-				logStepFailed("sandbox.teardown", scope, teardownError),
-			);
-		}
 		// A box that goes is retired with the transition, so nothing can wake it while it is deleted.
 		const changed = await transitionCloudWorkspace({
 			id: row.id,
-			from: ["provisioning", "awake", "asleep"],
+			from: madeAwake ? ["provisioning", "awake", "asleep"] : ["provisioning"],
 			to: "failed",
 			onBox: providerSandboxId,
 			set: keepForDiagnosis
@@ -351,6 +378,11 @@ async function provision(
 						...(forkedDrive ? { driveName: null, driveLaidOutAt: null } : {}),
 					},
 		});
+		if (changed && keepForDiagnosis) {
+			await stopSandbox(providerSandboxId).catch((teardownError) =>
+				logStepFailed("sandbox.teardown", scope, teardownError),
+			);
+		}
 		if (changed && !keepForDiagnosis) {
 			await deleteSandboxAndDriveLater({
 				providerSandboxId,
@@ -359,10 +391,15 @@ async function provision(
 				logStepFailed("sandbox.teardown", scope, teardownError),
 			);
 		}
-		nudge(row.organizationId, "cloud_workspaces");
-		await failChatMovesTo(row.id, "The cloud workspace could not start").catch(
-			(moveError) => logStepFailed("chat_moves.fail", scope, moveError),
-		);
+		if (changed) {
+			nudge(row.organizationId, "cloud_workspaces");
+			await failChatMovesTo(
+				row.id,
+				"The cloud workspace could not start",
+			).catch((moveError) =>
+				logStepFailed("chat_moves.fail", scope, moveError),
+			);
+		}
 		logControl(
 			"workspace.failed",
 			scope,

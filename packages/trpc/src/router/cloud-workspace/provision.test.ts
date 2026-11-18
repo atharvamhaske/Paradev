@@ -5,6 +5,7 @@ import * as realtime from "../../lib/realtime";
 import * as sandbox from "../../lib/sandbox";
 import * as chatMoves from "../chat-move/utils/queueChatMove";
 import * as laidOut from "./drive-laid-out";
+import * as jobs from "./jobs";
 import * as meter from "./meter";
 import { provisionCloudWorkspace } from "./provision";
 import * as resumeLock from "./resume-lock";
@@ -32,6 +33,10 @@ let wins: (to: string) => boolean;
 let current: { status: string; providerSandboxId?: string } | undefined;
 let lockKeys: string[];
 let rowBox: string;
+// The row's status as the transitions see it: another delivery or a wake may have moved it.
+let rowStatus: string;
+let authorize: () => Promise<{ bootId: string | null }>;
+let requeued: unknown[];
 
 let reads = 0;
 stub(db.query.cloudWorkspaces, {
@@ -73,21 +78,24 @@ stub(sandbox, {
 	recordBootSpans: () => {},
 });
 stub(meter, {
-	authorizeBoot: async () => ({ bootId: null }),
+	authorizeBoot: async () => authorize(),
 	attachBootSession: async () => {},
 	releaseBoot: async () => {},
 });
 stub(transition, {
 	transitionCloudWorkspace: async (args: {
+		from: string[];
 		to: string;
 		set?: Record<string, unknown>;
 		onBox?: string;
 	}) => {
 		if (!wins(args.to)) return false;
+		if (!args.from.includes(rowStatus)) return false;
 		if (args.onBox !== undefined && args.onBox !== rowBox) return false;
 		events.push(
 			`to ${args.to}${args.set && "providerSandboxId" in args.set ? ` box=${args.set.providerSandboxId === "ws-box" ? "same" : "new"}` : ""}`,
 		);
+		rowStatus = args.to;
 		return true;
 	},
 });
@@ -117,6 +125,11 @@ stub(chatMoves, {
 	failChatMovesTo: async () => {},
 });
 stub(realtime, { nudge: () => {} });
+stub(jobs, {
+	publishCloudWorkspaceJob: async (job: { body: unknown }) => {
+		requeued.push(job.body);
+	},
+});
 stub(resumeLock, {
 	sandboxResumeLock: (key: string) => {
 		lockKeys.push(key);
@@ -135,6 +148,9 @@ beforeEach(() => {
 	reads = 0;
 	lockKeys = [];
 	rowBox = "ws-box";
+	rowStatus = "provisioning";
+	authorize = async () => ({ bootId: null });
+	requeued = [];
 });
 
 describe("provisionCloudWorkspace with a drive", () => {
@@ -160,6 +176,45 @@ describe("provisionCloudWorkspace with a drive", () => {
 		expect(events).toContain("asleep");
 		expect(events).not.toContain("to failed");
 		expect(events.some((event) => event.startsWith("teardown"))).toBe(false);
+	});
+
+	test("a second delivery on the same box that fails after the first brought the row up leaves the live workspace alone", async () => {
+		// The first delivery made the row awake and the user works; this one is refused by the spend cap.
+		rowStatus = "awake";
+		authorize = async () => {
+			throw new Error("spend cap reached");
+		};
+		expect(await provisionCloudWorkspace({ cloudWorkspaceId: ROW.id })).toBe(
+			"failed",
+		);
+		expect(rowStatus).toBe("awake");
+		expect(events).not.toContain("stop");
+		expect(events.some((event) => event.startsWith("teardown"))).toBe(false);
+		expect(events.some((event) => event.startsWith("to "))).toBe(false);
+	});
+
+	test("a lock held by another caller requeues the provision; nothing is stopped or failed", async () => {
+		create = async () => {
+			throw new sandbox.SandboxBusyError("drive-ws-box");
+		};
+		expect(await provisionCloudWorkspace({ cloudWorkspaceId: ROW.id })).toBe(
+			"retrying",
+		);
+		expect(requeued).toEqual([{ cloudWorkspaceId: ROW.id, lockRetries: 1 }]);
+		expect(events).not.toContain("stop");
+		expect(events.some((event) => event.startsWith("to "))).toBe(false);
+	});
+
+	test("a lock still held after the last retry fails only a row still provisioning", async () => {
+		create = async () => {
+			throw new sandbox.SandboxBusyError("drive-ws-box");
+		};
+		await provisionCloudWorkspace({
+			cloudWorkspaceId: ROW.id,
+			lockRetries: 10,
+		});
+		expect(requeued).toEqual([]);
+		expect(events).toContain("to failed box=same");
 	});
 
 	test("a provision overtaken by an undo's second provision gives up its box, keeps the drive, and never marks the row", async () => {
@@ -219,6 +274,7 @@ describe("provisionCloudWorkspace with a drive", () => {
 
 		events = [];
 		reads = 0;
+		rowStatus = "provisioning";
 		row = { ...ROW, driveName: "drive-ws-box" };
 		fork = "existing";
 		await provisionCloudWorkspace({ cloudWorkspaceId: ROW.id });

@@ -41,6 +41,8 @@ export interface ControlEvents {
 	"provision.abandoned": { "box.deleted": boolean };
 	/** The drive did not come up at create: the box sleeps and the next wake mounts it afresh. */
 	"provision.asleep": { "error.class": string };
+	/** The box's resume lock was held: the provision requeued itself and touched nothing. */
+	"provision.retrying": { attempt: number };
 	"provision.completed": { ms: number };
 	"wake.started": Record<never, never>;
 	"wake.completed": {
@@ -122,6 +124,7 @@ export const CONTROL_EVENT_LEVELS: {
 	"provision.awake": "info",
 	"provision.abandoned": "info",
 	"provision.asleep": "warn",
+	"provision.retrying": "info",
 	"provision.completed": "info",
 	"wake.started": "info",
 	"wake.completed": "info",

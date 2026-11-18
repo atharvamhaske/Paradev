@@ -384,6 +384,15 @@ export class SandboxNotReadyError extends Error {
 	}
 }
 
+/** Another caller holds the box's resume lock: retry later, nothing is wrong with the box. */
+export class SandboxBusyError extends SandboxNotReadyError {
+	constructor(key: string) {
+		super(key);
+		this.name = "SandboxBusyError";
+		this.message = `Another caller is resuming or creating the box on ${key}`;
+	}
+}
+
 /**
  * The box did not come up on the drive its identity names: the drive did not
  * mount, belongs to another workspace, or the boot never laid it out. The

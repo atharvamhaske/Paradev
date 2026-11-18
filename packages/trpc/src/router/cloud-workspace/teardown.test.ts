@@ -14,6 +14,7 @@ let attached: boolean;
 let queued: Array<{ body: unknown; delaySeconds?: number }>;
 let live: { sandbox: boolean; drive: boolean };
 let stopFails: boolean;
+let holder: string;
 
 stub(sandbox, {
 	stopSandbox: async (id: string) => {
@@ -21,10 +22,14 @@ stub(sandbox, {
 		calls.push(`stop:${id}`);
 		return { sessionId: null };
 	},
-	waitForDriveDetached: async (name: string) => {
+	waitForDriveDetached: async (
+		name: string,
+		options: { heldByCaller?: (attachedTo: string) => Promise<boolean> } = {},
+	) => {
 		calls.push(`wait:${name}`);
-		if (attached) throw new sandbox.DriveStillAttachedError(name, "box");
-		return "detached";
+		if (!attached) return "detached";
+		if (await options.heldByCaller?.(holder)) return "held";
+		throw new sandbox.DriveStillAttachedError(name, holder);
 	},
 	deleteSandbox: async (id: string) => {
 		calls.push(`delete:${id}`);
@@ -49,6 +54,7 @@ beforeEach(() => {
 	queued = [];
 	live = { sandbox: false, drive: false };
 	stopFails = false;
+	holder = "box";
 });
 
 describe("teardownSandbox", () => {
@@ -126,6 +132,25 @@ describe("teardownSandbox", () => {
 			"wait:drive-box",
 			"delete:lost-box",
 		]);
+	});
+
+	test("a lost box goes even while the row's live box holds the kept drive", async () => {
+		attached = true;
+		holder = "live-box";
+		expect(
+			await teardownSandbox({
+				providerSandboxId: "lost-box",
+				driveName: "drive-box",
+				attempt: 0,
+				keepDrive: true,
+			}),
+		).toBe("deleted");
+		expect(calls).toEqual([
+			"stop:lost-box",
+			"wait:drive-box",
+			"delete:lost-box",
+		]);
+		expect(queued).toEqual([]);
 	});
 
 	test("any other failure is retried, not dropped", async () => {

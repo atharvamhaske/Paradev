@@ -54,6 +54,13 @@ async function teardownOnce(
 		try {
 			await waitForDriveDetached(input.driveName, {
 				timeoutMs: TEARDOWN_DETACH_WAIT_MS,
+				// A kept drive only has to leave this box; the row's other box may hold it for good.
+				...(input.keepDrive
+					? {
+							heldByCaller: async (attachedTo: string) =>
+								attachedTo !== input.providerSandboxId,
+						}
+					: {}),
 			});
 		} catch (error) {
 			if (!(error instanceof DriveStillAttachedError)) throw error;
