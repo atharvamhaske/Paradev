@@ -488,6 +488,40 @@ function drivePass(): void {
 			currentBranch() === "superset/boot-twice-fork-2",
 		fetchFails.match(/checkout\..*/g)?.join(" | "),
 	);
+	// A fresh fork whose first session ended between its layout and its checkout.
+	endSession();
+	const interrupted = randomUUID();
+	exec(
+		`git -C ${drive}/workspace checkout -q main && git -C ${drive}/workspace -c user.name=t -c user.email=t@example.invalid commit -q --allow-empty -m stale-golden-copy`,
+		{ user: "ubuntu", on },
+	);
+	const staleCopy = exec(`git -C ${drive}/workspace rev-parse main`, {
+		user: "ubuntu",
+		on,
+	}).trim();
+	exec(
+		`rm -rf ${state} && mkdir -p ${state} && : > ${state}/fresh && echo ${interrupted} > ${state}/workspace-id && chown -R ubuntu:ubuntu ${state}`,
+		{ on },
+	);
+	writeConf({
+		...driveIdentity,
+		SUPERSET_SANDBOX_WORKSPACE_ID: interrupted,
+		SUPERSET_SANDBOX_REPOSITORIES: JSON.stringify([
+			{ url: repo, branch: "main", baseBranch: "main", path: "." },
+		]),
+	});
+	const resumedFresh = bootAndCheckout();
+	expect(
+		"fresh fork, first session ended before its checkout: the next boot still fetches",
+		/checkout\.fetched \. main from main/.test(resumedFresh) &&
+			head() !== staleCopy &&
+			exec(`test -e ${state}/fresh && echo still || echo gone`, {
+				check: false,
+				on,
+			}).trim() === "gone",
+		resumedFresh.match(/checkout\..*/g)?.join(" | "),
+	);
+
 	writeConf(driveIdentity);
 
 	const refuses = (label: string, phase: string) => {

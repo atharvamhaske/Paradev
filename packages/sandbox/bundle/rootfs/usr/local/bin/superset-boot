@@ -69,8 +69,6 @@ stamp "run.cleared"
 # snapshot. Bind mounts end with the session, so every boot does this, before
 # anything reads /workspace. A bind mount, not a symlink: paths must not move.
 DRIVE_MODE=""
-# Set at the first layout of a fresh fork, and kept across the reexec: its checkout is no one's work yet.
-[ -n "${SUPERSET_BOOT_REEXEC:-}" ] || unset SUPERSET_DRIVE_FRESH
 user_path() {
 	local dir="$1" part IFS=/
 	for part in $2; do
@@ -131,9 +129,10 @@ layout_drive() {
 		bind_into "${drive}/home/${sub}" "${SUPERSET_USER_HOME}/${sub}"
 	done
 	if [ -z "$owner" ]; then
-		printf '%s\n' "$SUPERSET_SANDBOX_WORKSPACE_ID" > "${sentinel}.tmp" && mv -T "${sentinel}.tmp" "$sentinel" &&
-			sync "$sentinel" "$SUPERSET_DRIVE_STATE_DIR" || refuse "cannot write ${sentinel}"
-		export SUPERSET_DRIVE_FRESH=1
+		# A fresh fork: its checkout is no one's work until the first checkout has run, in this boot or a later one.
+		: > "${SUPERSET_DRIVE_STATE_DIR}/fresh" &&
+			printf '%s\n' "$SUPERSET_SANDBOX_WORKSPACE_ID" > "${sentinel}.tmp" && mv -T "${sentinel}.tmp" "$sentinel" &&
+			sync "${SUPERSET_DRIVE_STATE_DIR}/fresh" "$sentinel" "$SUPERSET_DRIVE_STATE_DIR" || refuse "cannot write ${sentinel}"
 	fi
 	DRIVE_MODE=1
 	use_drive_state
@@ -372,7 +371,7 @@ start_hook() {
 # a golden has the markers stripped so a fork fetches its branch into the
 # checkout it inherited.
 # A drive laid out in an earlier boot holds the user's work: nothing on it is replaced.
-drive_has_work() { [ -n "$DRIVE_MODE" ] && [ -z "${SUPERSET_DRIVE_FRESH:-}" ]; }
+drive_has_work() { [ -n "$DRIVE_MODE" ] && [ ! -e "${SUPERSET_DRIVE_STATE_DIR}/fresh" ]; }
 checkout_one() {
 	local url="$1" branch="$2" path="$3" base="$4"
 	[ -n "$base" ] || base="$branch"
@@ -436,6 +435,10 @@ checkout() {
 		[ -n "$path" ] || continue
 		checkout_one "$url" "$branch" "$path" "$base" || failed=1
 	done < <(printf '%s' "$SUPERSET_SANDBOX_REPOSITORIES" | jq -r '.[] | [.url, .branch, .path, (.baseBranch // "")] | @tsv')
+	# The box was usable once this checkout ran, failed or not: from now on what is on the drive may be the user's.
+	if [ -n "$DRIVE_MODE" ] && [ -e "${SUPERSET_DRIVE_STATE_DIR}/fresh" ]; then
+		rm -f "${SUPERSET_DRIVE_STATE_DIR}/fresh" && sync "$SUPERSET_DRIVE_STATE_DIR" && stamp "checkout.fresh.done"
+	fi
 	exclude_stores
 	return "$failed"
 }
