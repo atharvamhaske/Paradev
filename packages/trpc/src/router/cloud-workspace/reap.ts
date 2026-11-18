@@ -1,6 +1,7 @@
 import { db } from "@superset/db/client";
 import { cloudWorkspaces } from "@superset/db/schema";
 import { and, eq } from "drizzle-orm";
+import { logControl, logStepFailed } from "../../lib/control-log";
 import { detachAll, reapOrphanFiles } from "../../lib/files";
 import {
 	describeSandbox,
@@ -108,7 +109,8 @@ export async function reapArchivedCloudWorkspace(
 			),
 		);
 		if (!retired) return "skipped";
-		await reapWorkspaceFiles(row.id);
+		await reapWorkspaceFiles(row.id, row.organizationId);
+		logControl("archive.deleted", scope, {});
 		return "reaped";
 	}
 	if (!(await runArchiveHook(row, input))) return "skipped";

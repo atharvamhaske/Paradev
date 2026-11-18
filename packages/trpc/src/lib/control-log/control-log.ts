@@ -39,6 +39,8 @@ export interface ControlEvents {
 	"provision.skipped": { "workspace.status": string };
 	"provision.awake": { ms: number };
 	"provision.abandoned": { "box.deleted": boolean };
+	/** The drive did not come up at create: the box sleeps and the next wake mounts it afresh. */
+	"provision.asleep": { "error.class": string };
 	"provision.completed": { ms: number };
 	"wake.started": Record<never, never>;
 	"wake.completed": {
@@ -119,6 +121,7 @@ export const CONTROL_EVENT_LEVELS: {
 	"provision.skipped": "info",
 	"provision.awake": "info",
 	"provision.abandoned": "info",
+	"provision.asleep": "warn",
 	"provision.completed": "info",
 	"wake.started": "info",
 	"wake.completed": "info",

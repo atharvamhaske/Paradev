@@ -160,9 +160,21 @@ async function wake(
 			.set(set)
 			.where(eq(cloudWorkspaces.id, row.id));
 	}
-	if (expiresAt) await recordSandboxAwake(row.id, { expiresAt, sessionId });
+	if (expiresAt)
+		await recordSandboxAwake(
+			row.id,
+			{ expiresAt, sessionId },
+			row.organizationId,
+		);
 	// settleSandbox only answers for a drive whose boot laid it out.
 	if (row.driveName && !row.driveLaidOutAt) await recordDriveLaidOut(row.id);
+	if (rebooted) {
+		logControl("wake.completed", scope, {
+			ms: Date.now() - wakeStartedAt,
+			"box.resumed": booted,
+			"box.rebooted": rebooted,
+		});
+	}
 	return {
 		hostTarget,
 		booted,

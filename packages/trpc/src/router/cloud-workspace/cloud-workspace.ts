@@ -917,7 +917,7 @@ export const cloudWorkspaceRouter = {
 								eq(cloudWorkspaces.deletedAt, archivedAt),
 							),
 						);
-						await reapWorkspaceFiles(row.id);
+						await reapWorkspaceFiles(row.id, row.organizationId);
 					});
 				}
 				await recordCloudWorkspaceActivity(

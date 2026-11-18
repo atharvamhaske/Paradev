@@ -31,9 +31,16 @@ import {
 } from "../chat-move/utils/queueChatMove";
 import { recordDriveLaidOut } from "./drive-laid-out";
 import { generateCloudWorkspaceName } from "./generate-name";
-import { attachBootSession, authorizeBoot, boxFor, releaseBoot } from "./meter";
+import {
+	attachBootSession,
+	authorizeBoot,
+	boxFor,
+	isUsageRefusal,
+	releaseBoot,
+} from "./meter";
 import { sandboxResumeLock } from "./resume-lock";
 import { recordSandboxAwake } from "./sandbox-expiry";
+import { nextSandboxNameFor } from "./sandbox-name";
 import { recordSandboxAsleep } from "./sandbox-sleep";
 import { deleteSandboxAndDriveLater } from "./teardown";
 import { transitionCloudWorkspace } from "./transition";
@@ -46,8 +53,6 @@ export function sandboxNameFor(cloudWorkspaceId: string): string {
 }
 
 export { nextSandboxNameFor } from "./sandbox-name";
-
-import { nextSandboxNameFor } from "./sandbox-name";
 
 export interface ProvisionCloudWorkspaceInput {
 	cloudWorkspaceId: string;
@@ -187,6 +192,10 @@ async function provision(
 			createdByUserId: row.createdByUserId,
 			...boxFor(claim.vcpus),
 		}));
+		if (bootId) {
+			scope.bootId = bootId;
+			span.setAttribute("boot.id", bootId);
+		}
 		driveName = claimedDrive;
 		if (driveName) {
 			forkedDrive =
@@ -226,8 +235,11 @@ async function provision(
 				columns: { status: true, providerSandboxId: true },
 			});
 			// An undo gave the row another box and a second provision: this box is no row's, and must not keep the drive.
-			if (current && current.providerSandboxId !== providerSandboxId) {
-				if (bootId) await releaseBoot(bootId);
+			const overtaken =
+				current !== undefined &&
+				current.providerSandboxId !== providerSandboxId;
+			if (overtaken) {
+				if (bootId) await releaseBoot(bootId, "provision_abandoned");
 				await deleteSandboxAndDriveLater({
 					providerSandboxId,
 					driveName,
@@ -237,11 +249,9 @@ async function provision(
 				await failChatMovesTo(row.id, "The cloud workspace was deleted").catch(
 					(error) => logStepFailed("chat_moves.fail", scope, error),
 				);
-				if (bootId) await releaseBoot(bootId);
+				if (bootId) await releaseBoot(bootId, "provision_abandoned");
 			}
-			logControl("provision.abandoned", scope, {
-				"box.deleted": current?.status === "archived",
-			});
+			logControl("provision.abandoned", scope, { "box.deleted": overtaken });
 			await naming.catch(() => {});
 			return "skipped";
 		}
@@ -294,13 +304,19 @@ async function provision(
 			const stopped = await stopSandbox(providerSandboxId).catch(() => ({
 				sessionId: null,
 			}));
-			await recordSandboxAsleep(row.id, stopped);
+			await recordSandboxAsleep(row.id, stopped, row.organizationId);
 			nudge(row.organizationId, "cloud_workspaces");
-			if (bootId) await releaseBoot(bootId).catch(() => {});
-			await queueChatMovesTo(row.id).catch(() => {});
-			console.warn(
-				`[cloud-workspace] ${row.id} provisioned asleep: ${error.message}`,
+			if (bootId) {
+				await releaseBoot(bootId, "provision_failed").catch((releaseError) =>
+					logStepFailed("boot.release", scope, releaseError),
+				);
+			}
+			await queueChatMovesTo(row.id).catch((moveError) =>
+				logStepFailed("chat_moves.queue", scope, moveError),
 			);
+			logControl("provision.asleep", scope, {
+				"error.class": errorClass(error),
+			});
 			return "provisioned";
 		}
 		if (bootId) {
@@ -316,16 +332,14 @@ async function provision(
 		const keepForDiagnosis =
 			error instanceof SandboxNotReadyError ||
 			error instanceof SandboxDriveRefusedError;
+		const refused = isUsageRefusal(error);
 		if (keepForDiagnosis) {
-			await stopSandbox(providerSandboxId).catch((stopError) =>
-				console.error(
-					`[cloud-workspace] could not stop sandbox ${providerSandboxId}`,
-					stopError,
-				),
+			await stopSandbox(providerSandboxId).catch((teardownError) =>
+				logStepFailed("sandbox.teardown", scope, teardownError),
 			);
 		}
 		// A box that goes is retired with the transition, so nothing can wake it while it is deleted.
-		const failed = await transitionCloudWorkspace({
+		const changed = await transitionCloudWorkspace({
 			id: row.id,
 			from: ["provisioning", "awake", "asleep"],
 			to: "failed",
@@ -337,15 +351,12 @@ async function provision(
 						...(forkedDrive ? { driveName: null, driveLaidOutAt: null } : {}),
 					},
 		});
-		if (failed && !keepForDiagnosis) {
+		if (changed && !keepForDiagnosis) {
 			await deleteSandboxAndDriveLater({
 				providerSandboxId,
 				driveName: forkedDrive ? driveName : null,
 			}).catch((teardownError) =>
-				console.error(
-					`[cloud-workspace] leaked sandbox ${providerSandboxId}${forkedDrive && driveName ? ` or its drive ${driveName}` : ""}`,
-					teardownError,
-				),
+				logStepFailed("sandbox.teardown", scope, teardownError),
 			);
 		}
 		nudge(row.organizationId, "cloud_workspaces");
