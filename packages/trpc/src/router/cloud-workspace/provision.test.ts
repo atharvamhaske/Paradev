@@ -103,8 +103,13 @@ stub(laidOut, {
 	},
 });
 stub(teardown, {
-	deleteSandboxAndDriveLater: async (args: { driveName: string | null }) => {
-		events.push(`teardown drive=${args.driveName}`);
+	deleteSandboxAndDriveLater: async (args: {
+		driveName: string | null;
+		keepDrive?: boolean;
+	}) => {
+		events.push(
+			`teardown drive=${args.driveName}${args.keepDrive ? " kept" : ""}`,
+		);
 	},
 });
 stub(chatMoves, {
@@ -164,7 +169,7 @@ describe("provisionCloudWorkspace with a drive", () => {
 		expect(await provisionCloudWorkspace({ cloudWorkspaceId: ROW.id })).toBe(
 			"skipped",
 		);
-		expect(events).toContain("teardown drive=drive-ws-box");
+		expect(events).toContain("teardown drive=drive-ws-box kept");
 		expect(events.some((event) => event.startsWith("to "))).toBe(false);
 		expect(events).not.toContain("laid out");
 	});

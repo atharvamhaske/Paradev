@@ -17,6 +17,8 @@ export interface TeardownSandboxInput {
 	providerSandboxId: string;
 	driveName: string | null;
 	attempt: number;
+	/** The drive is only waited for, never deleted: another box of the row runs on it. */
+	keepDrive?: boolean;
 }
 
 /** One attempt fits a short request; a drive still flushing is tried again later. */
@@ -61,6 +63,7 @@ async function teardownOnce(
 	const live = await liveReferences(input);
 	if (live.sandbox) return kept(input, "sandbox");
 	await deleteSandbox(input.providerSandboxId);
+	if (input.keepDrive) return "deleted";
 	if (live.drive) return kept(input, "drive");
 	if ((await liveReferences(input)).drive) return kept(input, "drive");
 	await deleteWorkspaceDrive(input.driveName);
@@ -111,12 +114,14 @@ function queueTeardown(
 export async function deleteSandboxAndDriveLater(args: {
 	providerSandboxId: string;
 	driveName: string | null | undefined;
+	keepDrive?: boolean;
 }): Promise<void> {
 	if (!args.driveName) return deleteSandbox(args.providerSandboxId);
 	await queueTeardown({
 		providerSandboxId: args.providerSandboxId,
 		driveName: args.driveName,
 		attempt: 0,
+		...(args.keepDrive ? { keepDrive: true } : {}),
 	});
 }
 

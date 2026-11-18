@@ -228,7 +228,11 @@ async function provision(
 			// An undo gave the row another box and a second provision: this box is no row's, and must not keep the drive.
 			if (current && current.providerSandboxId !== providerSandboxId) {
 				if (bootId) await releaseBoot(bootId);
-				await deleteSandboxAndDriveLater({ providerSandboxId, driveName });
+				await deleteSandboxAndDriveLater({
+					providerSandboxId,
+					driveName,
+					keepDrive: true,
+				});
 			} else if (current?.status === "archived") {
 				await failChatMovesTo(row.id, "The cloud workspace was deleted").catch(
 					(error) => logStepFailed("chat_moves.fail", scope, error),

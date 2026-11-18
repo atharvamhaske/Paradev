@@ -110,6 +110,24 @@ describe("teardownSandbox", () => {
 		expect(calls).toEqual(["stop:old-box", "wait:drive-box", "delete:old-box"]);
 	});
 
+	test("a box of the row's lost provision goes; the drive the row runs on is never deleted, failed or not", async () => {
+		// The row has since gone failed, and still names the drive with the user's work on it.
+		live = { sandbox: false, drive: false };
+		expect(
+			await teardownSandbox({
+				providerSandboxId: "lost-box",
+				driveName: "drive-box",
+				attempt: 0,
+				keepDrive: true,
+			}),
+		).toBe("deleted");
+		expect(calls).toEqual([
+			"stop:lost-box",
+			"wait:drive-box",
+			"delete:lost-box",
+		]);
+	});
+
 	test("any other failure is retried, not dropped", async () => {
 		stopFails = true;
 		expect(

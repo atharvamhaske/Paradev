@@ -10,6 +10,7 @@ const payloadSchema = z
 		providerSandboxId: z.string().min(1),
 		driveName: z.string().min(1).nullable(),
 		attempt: z.number().int().min(0),
+		keepDrive: z.boolean().optional(),
 	})
 	.strict();
 

@@ -1,31 +1,24 @@
 import { db } from "@superset/db/client";
 import { cloudWorkspaces, environments } from "@superset/db/schema";
-import { and, eq, isNull, notInArray } from "drizzle-orm";
-
-/** A workspace in these states lets its box and drive go; any other names them as its own. */
-const RELEASED = ["archived", "failed"] as const;
+import { and, eq, isNull } from "drizzle-orm";
 
 /**
- * Whether a workspace or an environment still names the sandbox or the drive.
- * An unarchive reuses both names, so a teardown queued before it must not
- * delete what the revived workspace now runs on.
+ * Whether a workspace, in any status, or a live environment still names the
+ * sandbox or the drive. Every real teardown clears the row's names in the
+ * write that commits to it (retireAndTearDown), so a name still on a row is
+ * that row's: an archived row may be undone onto it, and a failed one keeps
+ * its box and drive for diagnosis with the work in them.
  */
 export async function liveReferences(args: {
 	providerSandboxId: string;
 	driveName: string | null;
 }): Promise<{ sandbox: boolean; drive: boolean }> {
-	const live = notInArray(cloudWorkspaces.status, [...RELEASED]);
 	const [workspaceBox, goldenBox, workspaceDrive, goldenDrive] =
 		await Promise.all([
 			db
 				.select({ id: cloudWorkspaces.id })
 				.from(cloudWorkspaces)
-				.where(
-					and(
-						eq(cloudWorkspaces.providerSandboxId, args.providerSandboxId),
-						live,
-					),
-				)
+				.where(eq(cloudWorkspaces.providerSandboxId, args.providerSandboxId))
 				.limit(1),
 			db
 				.select({ id: environments.id })
@@ -41,7 +34,7 @@ export async function liveReferences(args: {
 				? db
 						.select({ id: cloudWorkspaces.id })
 						.from(cloudWorkspaces)
-						.where(and(eq(cloudWorkspaces.driveName, args.driveName), live))
+						.where(eq(cloudWorkspaces.driveName, args.driveName))
 						.limit(1)
 				: [],
 			args.driveName
