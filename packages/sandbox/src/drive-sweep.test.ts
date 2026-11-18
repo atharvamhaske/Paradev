@@ -1,47 +1,80 @@
 import { describe, expect, test } from "bun:test";
-import { orphanDrives } from "./drive-sweep";
+import { orphanCandidates, type SweepHost, sweepDrives } from "./drive-sweep";
 
 const DAY = 24 * 60 * 60 * 1000;
 const NOW = 100 * DAY;
 const old = NOW - 10 * DAY;
 
-describe("orphanDrives", () => {
-	test("only an old, detached drive that no workspace or live environment names", () => {
-		const orphans = orphanDrives({
+describe("orphanCandidates", () => {
+	test("any row that names a drive keeps it, whatever its status or age", () => {
+		const candidates = orphanCandidates({
 			drives: [
-				{ name: "drive-ws-live", createdAt: old },
-				{ name: "drive-ws-grace", createdAt: old },
-				{ name: "drive-ws-reaped", createdAt: old },
+				{ name: "drive-ws-archived-long-ago", createdAt: old },
 				{ name: "drive-ws-unnamed", createdAt: old },
 				{ name: "drive-ws-young", createdAt: NOW - DAY / 2 },
 				{ name: "drive-ws-held", createdAt: old, attachedTo: "box" },
-				{ name: "env-drive-live", createdAt: old },
+				{ name: "env-drive-archived-env", createdAt: old },
 				{ name: "env-drive-gone", createdAt: old },
 				{ name: "agent-tools-iad1-feedfacecafe", createdAt: old },
 			],
-			owners: {
-				workspaces: [
-					{ driveName: "drive-ws-live", status: "asleep", deletedAt: null },
-					{
-						driveName: "drive-ws-grace",
-						status: "archived",
-						deletedAt: new Date(NOW - 3 * DAY),
-					},
-					{
-						driveName: "drive-ws-reaped",
-						status: "archived",
-						deletedAt: new Date(NOW - 9 * DAY),
-					},
-				],
-				liveGoldens: ["env-drive-live"],
-			},
+			named: new Set(["drive-ws-archived-long-ago", "env-drive-archived-env"]),
 			now: NOW,
 			minAgeMs: 2 * DAY,
 		});
-		expect(orphans.map((drive) => drive.name)).toEqual([
-			"drive-ws-reaped",
+		expect(candidates.map((drive) => drive.name)).toEqual([
 			"drive-ws-unnamed",
 			"env-drive-gone",
 		]);
+	});
+});
+
+describe("sweepDrives", () => {
+	test("a drive an unarchive named after the listing is kept: each delete checks again", async () => {
+		const deleted: string[] = [];
+		let named = new Set<string>();
+		const host: SweepHost = {
+			listDrives: async () => [
+				{ name: "drive-ws-a", createdAt: old },
+				{ name: "drive-ws-b", createdAt: old },
+			],
+			namedDrives: async () => {
+				const listedAt = named;
+				// The user unarchives workspace a right after the listing.
+				named = new Set(["drive-ws-a"]);
+				return listedAt;
+			},
+			stillOrphaned: async (name) => !named.has(name),
+			remove: async (name) => {
+				deleted.push(name);
+			},
+		};
+		const result = await sweepDrives({
+			host,
+			now: NOW,
+			minAgeMs: 2 * DAY,
+			remove: true,
+			log: () => {},
+		});
+		expect(deleted).toEqual(["drive-ws-b"]);
+		expect(result).toEqual({ candidates: 2, deleted: 1, failed: 0 });
+	});
+
+	test("a dry run deletes nothing", async () => {
+		const deleted: string[] = [];
+		await sweepDrives({
+			host: {
+				listDrives: async () => [{ name: "drive-ws-a", createdAt: old }],
+				namedDrives: async () => new Set(),
+				stillOrphaned: async () => true,
+				remove: async (name) => {
+					deleted.push(name);
+				},
+			},
+			now: NOW,
+			minAgeMs: 2 * DAY,
+			remove: false,
+			log: () => {},
+		});
+		expect(deleted).toEqual([]);
 	});
 });
