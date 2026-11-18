@@ -226,6 +226,13 @@ Documented by Vercel or the SDK, not measured:
   tell the archive it lost to from a later one after an undo; that archive's reap can, by its
   `archivedAt`. The cost is that a box the user never saw lives until that reap's stop and
   delete stages. Date/Author: 2026-11-17, agent.
+- Decision: "fresh fork" is a file on the drive (`state/fresh`), written and synced with the
+  owner at the first layout, and removed once the first checkout has run, whether it succeeded or
+  failed. Rationale: an environment variable lived for one boot only, so a first session that
+  ended before its checkout left the next boot treating the golden's copy as the user's work (the
+  model's FixFreshDurable). The file goes after a failed checkout too, unlike the model's
+  proposal: once that checkout has run the box was usable, and a later fresh-path reclone or
+  `checkout -B` could replace what the user did meanwhile. Date/Author: 2026-11-18, agent.
 - Decision: a fresh fork is recognised by its drive having no owner at the first layout, not by
   the golden strip removing local branches (the model's FixFresh). Rationale: promote and the
   release both strip the drive's state, owner included, so every fork's first boot is fresh and
@@ -456,11 +463,13 @@ never shown as their work.
 | A drive refusal is read from this boot only, found within about 2 s, and retried by the next wake or create; one no remount can change ends after 3 boots in a row with a clear `failed` and a Sentry report. | `runBoot` boot id, `driveRefusalIn`, `persistentDriveRefusals`, `SandboxDriveMissingError` (a not-ready), `SandboxDriveRefusedError` (an unavailable), `DRIVE_REFUSAL_LIMIT`; `wakeSandbox` stops the box; `provision.ts` records it asleep | `vercel.test.ts` "only this boot's lines count…", "a reexec's second boot.start joins its boot", "counts the persistent refusals in a row…", "a refused boot is a retryable not-ready…", "a refusal no remount can change ends the retries…"; `provision.test.ts` "a drive refusal at create leaves the workspace asleep…" |
 | In drive mode, what describes the drive's contents is on the drive: checkout markers, `host.db` and its WAL, `agent-launched`, the owner. | `use_drive_state` in `superset-boot`; `SANDBOX_PATHS.driveState` | boot-twice "host.db and the checkout markers are on the drive, not the root disk", "drive, root rolled back"; real check "unclean stop: host.db passes integrity_check" |
 | A drive laid out before is never replaced by the checkout. | `checkout_one` with `drive_has_work` | boot-twice "drive, marker lost: the branch is kept", "drive, fetch failed: nothing on the drive is replaced" |
-| A fresh fork checks out its own branch as main does. | `SUPERSET_DRIVE_FRESH` from `layout_drive`, kept across the reexec | boot-twice "fresh fork, new branch", "fresh fork, a branch the golden has", "fresh fork, fetch failed" |
+| A fresh fork checks out its own branch as main does, even if its first session ended before the checkout. | `state/fresh` on the drive, written and synced with the owner at the first layout, removed once the first checkout has run (`checkout` in `superset-boot`) | boot-twice "fresh fork, new branch", "fresh fork, a branch the golden has", "fresh fork, fetch failed", "fresh fork, first session ended before its checkout: the next boot still fetches" |
 | Flag-off boxes run main's checkout code exactly. | `checkout_one` `else` branches | boot-twice first and second boot of the plain box; the diff against main |
 | A home subtree is never seeded partially. | `seed_home_subtree` (copy to `<sub>.seeding`, then `mv -T`; a failed copy refuses the boot) | boot-twice layout checks only; a failed copy is not simulated |
 | One read-write session per drive, and a concurrent wake of the same box does not wait. | `waitForDriveDetached` with `heldByCaller` in `wakeSandbox` | `vercel.test.ts` "a stopped box waits for its drive…", "a drive a concurrent wake already resumed this box with is not foreign"; `drives.test.ts` wait tests |
-| A stopped box's drive check and the call that resumes it are one step: no other caller resumes or stops the box in between. A refused box is stopped under the same lock. | `ResumeLock` around `wakeSandbox`'s read-to-boot and `provisionSandbox`; `sandboxResumeLock` (`resume-lock.ts`, a transaction-scoped `pg_try_advisory_xact_lock`), passed by `wake.ts` and `provision.ts`; a caller that finds it held answers "still starting" | `vercel.test.ts` "a second wake while the first resumes does not resume the box…" |
+| A stopped box's drive check and the call that resumes it are one step: no other caller resumes or stops the box in between. A refused box is stopped under the same lock. The lock is keyed on the drive when there is one: a drive has one writer, whatever the box is called. | `ResumeLock` around `wakeSandbox`'s read-to-boot and `provisionSandbox`; `sandboxResumeLock(driveName ?? providerSandboxId)` (`resume-lock.ts`, a transaction-scoped advisory lock; a wake tries and answers "still starting", a provision waits up to 20 s) | `vercel.test.ts` "a second wake while the first resumes does not resume the box…"; `provision.test.ts` "the create holds the lock of the drive, whatever the box is called" |
+| Nothing resumes a box outside that one step. After a read, every call goes through the session read (a Session call fails rather than resume a session that ended); a session that ended in between takes the stopped path under the same lock. | `resumeSession` (the only resume), `withLiveSession`, `wakeSandbox`, `provisionSandbox`, the settle's log read through a running session | `vercel.test.ts` "a box found running … whose session ends during the wake is resumed only after the drive check" |
+| Two provisions of one row never both run on its drive. | `provisioning -> awake` and `-> failed` only while the row names the job's own box (`transitionCloudWorkspace({ onBox })`); a job that lost to another box tears its own box down, keeping the drive; a new box is created only once its drive has detached | `provision.test.ts` "a provision overtaken by an undo's second provision gives up its box, keeps the drive, and never marks the row"; `vercel.test.ts` "a new box on a drive is created only once a box of another name has let go of the drive" |
 | A redelivered provision whose box has stopped waits for the drive and remounts it before anything resumes the box. | `provisionSandbox` (`existing.status !== "running"`) | `vercel.test.ts` "a redelivered provision whose box stopped waits for the drive before anything resumes it" |
 | The settle never resumes a box another caller stopped. | `settleSandbox` reads the boot log only from a box it just found running | `vercel.test.ts` settle tests |
 | A provision that lost its row to an archive tears nothing down; that archive's reap, keyed on its `archivedAt`, owns the box. A later archive gets its own full grace period. | `provision.ts` (the `!ready` branch); `isStillArchived` and the retiring write in `reap.ts` | `provision.test.ts` "a provision that lost its row to an archive leaves the box to that archive's reap", "a failed create whose row was archived meanwhile tears nothing down" |
@@ -469,7 +478,7 @@ never shown as their work.
 | A teardown never deletes what a live workspace or environment names. | `liveReferences` (`teardown-guard.ts`), read before each destructive call | `teardown.test.ts` "a box a revived workspace runs on is left alone", "an unarchived workspace's new box keeps the drive…" |
 | A failed provision deletes only a drive it forked. | `forkedDrive` in `provision.ts` | `provision.test.ts` "a failed create deletes a drive it forked, never one it found" |
 | No teardown failure is silent. | `teardownSandbox` reports to Sentry and requeues any failure; giving up is a Sentry error | `teardown.test.ts` "any other failure is retried, not dropped", "gives up after the last attempt…" |
-| A drive nothing names is found and, on request, deleted. | `drive-sweep.ts` (`orphanDrives`), Sandbox workflow `run: drive-sweep`, dry run unless `drive_sweep_delete` | `drive-sweep.test.ts` |
+| A drive nothing names is found and, on request, deleted; the sweep never deletes a drive any row names, archived or not, and checks each again just before its delete. | `drive-sweep.ts` (`orphanCandidates`, `sweepDrives`, `stillOrphaned`), Sandbox workflow `run: drive-sweep`, dry run unless `drive_sweep_delete` | `drive-sweep.test.ts` "any row that names a drive keeps it…", "a drive an unarchive named after the listing is kept…" |
 | A failed promote leaks neither the golden nor its drive. | `abandonGolden` (`environment.ts`) | `environment.test.ts` "hands the golden and its forked drive to the retried teardown" |
 | A golden carries no workspace identity, on the root disk or the drive, and is stripped only with its drive mounted. | `inheritedIdentityPaths` (includes `SANDBOX_PATHS.driveState`); `stripWorkspaceIdentity` checks `mountpoint` and the exit code | `vercel.test.ts` "forks the source's drive once it is released and strips identity on the drive", "a golden whose drive did not mount is not stripped and fails the promote" |
 | Turning the flag off stops new drives. | `buildSandboxClaim` (provision) and `environment.promote` consult `workspaceDrivesEnabled`; the release writes `golden_drive_name = null` | `claim.test.ts` "with the organization's flag off…"; `environment.test.ts` "a workspace whose files are on a drive does not spread drive mode…" |
@@ -493,6 +502,14 @@ never shown as their work.
    pre-drive boot script may run over a laid-out drive (`drive.downgrade`), so workspaces with a
    drive refuse to boot instead of showing an empty `/workspace`. Archive them before such a
    revert.
+
+
+## Before customers
+
+- Schedule the drive sweep and let it delete. Today it is a `workflow_dispatch` job only, dry run
+  unless `drive_sweep_delete` is set, so a drive whose teardown gave up stays until someone runs it
+  (the model's NoOrphanForever holds only if it is run). Once it has run dry in production a few
+  times and listed nothing it should not, run it on a schedule without the dry run.
 
 
 ## Follow-ups (out of scope)
