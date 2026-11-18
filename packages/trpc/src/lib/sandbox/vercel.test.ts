@@ -8,7 +8,7 @@ import {
 	test,
 } from "bun:test";
 import { SANDBOX_PATHS } from "@superset/shared/sandbox/contract";
-import { Drive, Sandbox } from "@vercel/sandbox";
+import { APIError, Drive, Sandbox } from "@vercel/sandbox";
 import { stub } from "../../../test/stub";
 import {
 	agentToolsMounts,
@@ -155,26 +155,26 @@ describe("wakeSandbox mounts", () => {
 	let current: Record<string, unknown>;
 	let events: string[];
 	let updates: Array<Record<string, unknown>>;
-	stub(Sandbox, {
-		get: async () => ({
-			get status() {
-				return status;
-			},
-			get mounts() {
-				return current;
-			},
-			vcpus: 4,
-			domain: () => "https://box.invalid",
-			update: async (params: Record<string, unknown>) => {
-				events.push("update");
-				updates.push(params);
-			},
-			extendTimeout: async () => {},
-			writeFiles: async () => {
-				throw RESUMED;
-			},
-		}),
-	});
+	const fake = {
+		get status() {
+			return status;
+		},
+		get mounts() {
+			return current;
+		},
+		vcpus: 4,
+		domain: () => "https://box.invalid",
+		update: async (params: Record<string, unknown>) => {
+			events.push("update");
+			updates.push(params);
+		},
+		extendTimeout: async () => {},
+		writeFiles: async () => {
+			throw RESUMED;
+		},
+		currentSession: () => fake,
+	};
+	stub(Sandbox, { get: async () => fake });
 	let attachedTo: string | undefined;
 	stub(Drive, {
 		get: async ({ name }: { name: string }) => {
@@ -332,11 +332,13 @@ describe("resume under one lock", () => {
 			events.push("stop");
 			status = "stopped";
 		},
-		currentSession: () => {
-			throw new Error("no session");
+	});
+	stub(Sandbox, {
+		get: async () => {
+			const fake = box();
+			return { ...fake, currentSession: () => fake };
 		},
 	});
-	stub(Sandbox, { get: async () => box() });
 	stub(Drive, {
 		get: async ({ name }: { name: string }) => {
 			events.push(`drive:${attachedTo ?? "detached"}`);
@@ -451,6 +453,206 @@ describe("resume under one lock", () => {
 	});
 });
 
+describe("a box found running", () => {
+	const ended = new Error("session ended");
+	const booted = new Error("booted on the new session");
+	let calls: string[];
+	let status: "running" | "stopped";
+	let attachedTo: string | undefined;
+	const endedSession = {
+		extendTimeout: async () => {
+			calls.push("old-session:extend");
+			// The extension past the plan's cap is refused, and the session ends.
+			status = "stopped";
+			attachedTo = "sbx";
+			throw ended;
+		},
+		update: async () => {
+			calls.push("old-session:policy");
+			throw ended;
+		},
+		writeFiles: async () => {
+			calls.push("old-session:write");
+			throw ended;
+		},
+		runCommand: async () => {
+			calls.push("old-session:boot");
+			throw ended;
+		},
+	};
+	const newSession = {
+		extendTimeout: async () => {},
+		update: async () => {},
+		writeFiles: async () => {
+			calls.push("new-session:write");
+		},
+		runCommand: async () => {
+			calls.push("new-session:boot");
+			throw booted;
+		},
+	};
+	// A Sandbox method other than a config update would resume a session that ended.
+	const resumes = (name: string) => async () => {
+		calls.push(`sandbox:${name}`);
+	};
+	stub(Sandbox, {
+		get: async ({ resume }: { resume?: boolean }) => {
+			if (resume) {
+				calls.push("resume");
+				status = "running";
+			}
+			return {
+				status,
+				mounts: {},
+				vcpus: 4,
+				expiresAt: new Date(Date.now() + 1000),
+				domain: () => "https://box.invalid",
+				extendTimeout: resumes("extend"),
+				update: async (params: Record<string, unknown>) => {
+					calls.push(params.mounts ? "mount" : "sandbox:update");
+				},
+				writeFiles: resumes("write"),
+				runCommand: resumes("boot"),
+				currentSession: () => (resume ? newSession : endedSession),
+			};
+		},
+	});
+	stub(Drive, {
+		get: async ({ name }: { name: string }) => {
+			calls.push(`drive:${attachedTo ?? "detached"}`);
+			const holder = attachedTo;
+			attachedTo = undefined;
+			return { name, currentSandboxName: holder };
+		},
+	});
+	stub(globalThis, {
+		fetch: async () => {
+			throw new Error("not answering");
+		},
+	});
+
+	beforeEach(() => {
+		calls = [];
+		status = "running";
+		attachedTo = undefined;
+	});
+
+	test("whose session ends during the wake is resumed only after the drive check", async () => {
+		await expect(
+			wakeSandbox({
+				providerSandboxId: "sbx",
+				claim: {
+					identity: {
+						SUPERSET_SANDBOX_CONTRACT: "1",
+						SUPERSET_BUNDLE_SHA: "0".repeat(64),
+						SUPERSET_API_URL: "https://api.invalid",
+						SUPERSET_SANDBOX_WORKSPACE_ID:
+							"00000000-0000-4000-8000-000000000001",
+						SUPERSET_SANDBOX_ORGANIZATION_ID:
+							"00000000-0000-4000-8000-000000000002",
+						SUPERSET_SANDBOX_REPOSITORIES: "[]",
+						SUPERSET_SANDBOX_IMAGE_TAG: "env-g",
+						SUPERSET_SANDBOX_PROVIDER: "vercel",
+						SUPERSET_SANDBOX_DRIVE: "drive-1",
+					},
+					files: [{ path: "/x", content: "y" }],
+					networkPolicy: {},
+					vcpus: 4,
+				} as never,
+				mounts: {
+					[SANDBOX_PATHS.drive]: { drive: "drive-1", mode: "read-write" },
+				} as never,
+			}),
+		).rejects.toBe(booted);
+		expect(calls.filter((call) => call.startsWith("sandbox:"))).toEqual([]);
+		const resumedAt = calls.indexOf("resume");
+		expect(calls.slice(0, resumedAt)).toContain("drive:sbx");
+		expect(calls.slice(0, resumedAt)).toContain("drive:detached");
+		expect(calls.slice(0, resumedAt)).toContain("mount");
+		expect(calls.slice(resumedAt)).toEqual([
+			"resume",
+			"new-session:write",
+			"new-session:write",
+			"new-session:boot",
+		]);
+	});
+});
+
+describe("a new box on a drive", () => {
+	let events: string[];
+	let attachedTo: string | undefined;
+	const session = {
+		writeFiles: async () => {
+			events.push("write");
+		},
+		runCommand: async () => {
+			events.push("boot");
+		},
+	};
+	stub(Sandbox, {
+		get: async () => {
+			throw new APIError(new Response(null, { status: 404 }));
+		},
+		fork: async () => {
+			events.push("create");
+			return {
+				domain: () => "https://box.invalid",
+				expiresAt: undefined,
+				currentSession: () => session,
+			};
+		},
+	});
+	stub(Drive, {
+		get: async ({ name }: { name: string }) => {
+			events.push(`drive:${attachedTo ?? "detached"}`);
+			const holder = attachedTo;
+			attachedTo = undefined;
+			return { name, currentSandboxName: holder };
+		},
+	});
+
+	beforeEach(() => {
+		events = [];
+		attachedTo = undefined;
+	});
+
+	test("is created only once a box of another name has let go of the drive", async () => {
+		// An undo's second provision: the first job's box still holds the drive.
+		attachedTo = "ws-box-1";
+		await provisionSandbox({
+			name: "ws-box-2",
+			environment: { sourceKind: "fork", sourceRef: "env-g", region: "iad1" },
+			claim: {
+				identity: {
+					SUPERSET_SANDBOX_CONTRACT: "1",
+					SUPERSET_BUNDLE_SHA: "0".repeat(64),
+					SUPERSET_API_URL: "https://api.invalid",
+					SUPERSET_SANDBOX_WORKSPACE_ID: "00000000-0000-4000-8000-000000000001",
+					SUPERSET_SANDBOX_ORGANIZATION_ID:
+						"00000000-0000-4000-8000-000000000002",
+					SUPERSET_SANDBOX_REPOSITORIES: "[]",
+					SUPERSET_SANDBOX_IMAGE_TAG: "env-g",
+					SUPERSET_SANDBOX_PROVIDER: "vercel",
+				},
+				hostSecret: "s",
+				files: [],
+				vcpus: 4,
+				networkPolicy: {},
+			} as never,
+			mounts: {
+				[SANDBOX_PATHS.drive]: { drive: "drive-1", mode: "read-write" },
+			} as never,
+		});
+		expect(events).toEqual([
+			"drive:ws-box-1",
+			"drive:detached",
+			"create",
+			"write",
+			"boot",
+		]);
+	});
+});
+
 describe("composeMounts", () => {
 	test("merges parts, a later part winning a shared path, and drops empty", () => {
 		const a = { "/a": { drive: "a", mode: "read-write" as const } };
@@ -557,7 +759,7 @@ describe("settleSandbox with a drive", () => {
 			hostTarget: "https://box.invalid",
 			claim,
 			bootId: "this",
-			getBox: async () => box,
+			getSession: async () => box,
 		}).catch((caught: unknown) => caught);
 		expect(error).toBeInstanceOf(SandboxDriveMissingError);
 		expect(error).toBeInstanceOf(SandboxNotReadyError);
@@ -576,7 +778,7 @@ describe("settleSandbox with a drive", () => {
 			hostTarget: "https://box.invalid",
 			claim,
 			bootId: `b${DRIVE_REFUSAL_LIMIT - 1}`,
-			getBox: async () => box,
+			getSession: async () => box,
 		}).catch((caught: unknown) => caught);
 		expect(error).toBeInstanceOf(SandboxDriveRefusedError);
 		expect(error).toBeInstanceOf(SandboxUnavailableError);
@@ -591,7 +793,7 @@ describe("settleSandbox with a drive", () => {
 				providerSandboxId: "sbx",
 				hostTarget: "https://box.invalid",
 				claim,
-				getBox: async () => box,
+				getSession: async () => box,
 			}),
 		).rejects.toBeInstanceOf(SandboxDriveMissingError);
 	});
@@ -603,7 +805,7 @@ describe("settleSandbox with a drive", () => {
 			providerSandboxId: "sbx",
 			hostTarget: "https://box.invalid",
 			claim,
-			getBox: async () => box,
+			getSession: async () => box,
 		});
 		expect(answer.stamps.map((stamp) => stamp.phase)).toContain("drive.layout");
 	});
