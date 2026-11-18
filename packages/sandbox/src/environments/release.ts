@@ -59,7 +59,7 @@ process.env.SKIP_ENV_VALIDATION ??= "1";
 const SKIP_IMAGE = process.argv.includes("--skip-image");
 const KEEP_OLD = process.argv.includes("--keep-old");
 const PRODUCTION = process.argv.includes("--production");
-/** Earlier bundles whose drives stay in every region: a wake that read its bundle just before this release still finds its drive, and so does a rollback by one release. */
+/** Released bundles before this one whose drives stay in every region, so a rollback by one release has its drives. A bundle a row named before this release is kept too: a wake that read it just before the rows moved still finds its drive. */
 const KEPT_PREVIOUS_BUNDLES = 1;
 const FOLLOWED_UPSTREAM = ["claude", "codex", "chrome", "opencode", "pi"];
 /** The environment the release rebuilds; without it, the release creates one named INTERNAL_NAME. */
@@ -564,6 +564,13 @@ const fromGolden = {
 	primaryRepositoryId: monorepo.id,
 	archivedAt: null,
 };
+const bundlesBeforeThisRelease = [
+	...new Set(
+		(await db.select({ sha: environments.bundleSha }).from(environments)).map(
+			(row) => row.sha,
+		),
+	),
+];
 const { internal, bundled } = await dbWs.transaction(async (tx) => {
 	const bundled = await tx
 		.update(environments)
@@ -628,6 +635,7 @@ if (!PRODUCTION) {
 				recentBundles: [
 					bundle.sha256,
 					...thisAndPrevious.map((row) => row.sha),
+					...bundlesBeforeThisRelease,
 				],
 				regions: SANDBOX_REGION_IDS,
 			}),
